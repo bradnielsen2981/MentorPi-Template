@@ -1,0 +1,22 @@
+CREATE TABLE users (
+   userid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+   firstname TEXT NOT NULL,
+   lastname TEXT NOT NULL,
+   password TEXT NOT NULL,
+   email TEXT NOT NULL,
+   permission TEXT DEFAULT 'user' CHECK (permission in ('user','admin')),
+   lastaccess DATE DEFAULT (datetime('now','localtime')),
+   status TEXT NULL,
+   profilepicture TEXT NULL
+);
+
+CREATE TABLE messages (
+   messageid INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+   messagetext TEXT NULL,
+   messageimage TEXT NULL,
+   author INTEGER NOT NULL,
+   FOREIGN KEY(author) REFERENCES users(userid) ON DELETE CASCADE
+);
+
+INSERT INTO users (email, firstname, lastname, password, permission) values
+('admin@admin', 'Peter', 'Whitehouse', 'admin', 'admin');

@@ -1,0 +1,62 @@
+
+html, body { height:100vh; } 
+.page-header { margin-top:50px; margin-bottom:20px; }
+
+button { max-width:300px !important; margin:5px; }
+button#turn_on_detection_button, button#load_robot_button { background-color:rgb(16, 184, 128) !important; }
+button#turn_on_detection_button:hover, button#load_robot_button:hover { background-color:rgb(6, 145, 99) !important; }
+
+.fa-solid, .fas { margin-left:10px !important; }
+
+#dashboard .row {
+    margin-left: 0px !important;
+    margin-top: 10px !important;
+    margin-bottom: 10px !important;
+}
+.row img { padding:0px; }
+
+input#colour_input { width:300px; }
+
+.videofeed
+{
+    border:1px solid white;
+    max-width:640px;
+}
+
+.mission
+{
+    padding:20px;
+    background:#ea39b824;
+    border:1px solid black;
+}
+
+
+
+
+
+
+
+
+/*LOADING BAR
+/* HTML: <div class="loader"></div> */
+.loader {
+    width: 45px;
+    aspect-ratio: .75;
+    --c: no-repeat linear-gradient(#b300ff 0 0);
+    background: 
+      var(--c) 0%   50%,
+      var(--c) 50%  50%,
+      var(--c) 100% 50%;
+    background-size: 20% 50%;
+    animation: l6 1s infinite linear;
+  }
+  @keyframes l6 {
+    20% {background-position: 0% 0%  ,50% 50% ,100% 50% }
+    40% {background-position: 0% 100%,50% 0%  ,100% 50% }
+    60% {background-position: 0% 50% ,50% 100%,100% 0%  }
+    80% {background-position: 0% 50% ,50% 50% ,100% 100%}
+  }
+
+#robot_buttons { display:none; }
+#shutdown_robot_button { display:none; }
+#loader { display:none; }

@@ -1,0 +1,36 @@
+{% extends "layout.html" %}
+{% block content %}
+    <div class="page-header" id="banner">
+        <div class="row">
+            <h1>Mission Dashboard</h1>
+        </div>
+    </div>
+    <div id="dashboard">
+    
+        <div class="row">
+            <div class="col-8">
+                <div class="row">
+                    <div id="loader" class="loader"></div>
+                    <button id="load_robot_button" type="button" class="btn btn-success">Load Robot</button>
+                    <button id="shutdown_robot_button" type="button" class="btn btn-danger">Shutdown Robot</button>
+                </div>
+                <div id="videofeed" class="row"> </div>
+                <div id="robot_buttons">
+                    <div class="row">
+                        <button id="turn_on_detection_button" type="button" class="btn btn-success">Turn on Detection <i class="fa-solid fa-arrows-to-eye"></i></button>
+                        <button id="turn_off_detection_button" type="button" class="btn btn-danger">Turn off Detection</button>
+                        <button id="look_down_button" type="button" class="btn btn-primary">Look Down</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="mission_tab" class="col-4 mission">
+                <h2>Set Mission</h2>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+{% block scripts %}
+    <script> robot_loaded = {{robot_loaded}}; </script>
+    <script src="/static/js/mission.js"></script> 
+{% endblock %}

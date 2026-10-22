@@ -1,0 +1,87 @@
+INFO:werkzeug: * Running on http://0.0.0.0:5000/ (Press CTRL+C to quit)
+INFO:flask.app:Login
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:17:58] "[97mGET / HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:17:58] "[36mGET /static/js/new_ajax_helper.js HTTP/1.1[0m" 304 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:17:58] "[36mGET /static/css/custom.css HTTP/1.1[0m" 304 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:17:58] "[36mGET /static/js/general.js HTTP/1.1[0m" 304 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:17:58] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+INFO:flask.app:Login
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:18:07] "[32mPOST / HTTP/1.1[0m" 302 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:18:07] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:18:07] "[36mGET /static/js/mission.js HTTP/1.1[0m" 304 -
+INFO:flask.app:Loading Robot
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:18:20] "[97mPOST /load_robot HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:18:20] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:flask.app:turn on detection
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:18:31] "[97mPOST /turn_on_detection HTTP/1.1[0m" 200 -
+INFO:flask.app:Looking Down
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:19:27] "[97mPOST /look_down HTTP/1.1[0m" 200 -
+INFO:flask.app:turn off detection
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:19:32] "[97mPOST /turn_off_detection HTTP/1.1[0m" 200 -
+INFO:flask.app:turn on detection
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:19:40] "[97mPOST /turn_on_detection HTTP/1.1[0m" 200 -
+INFO:flask.app:turn off detection
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:19:47] "[97mPOST /turn_off_detection HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:19:55] "[32mGET / HTTP/1.1[0m" 302 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:19:55] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:19:55] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:flask.app:Shutting down robot
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:19:59] "[97mPOST /shutdown_robot HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:06] "[32mGET / HTTP/1.1[0m" 302 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:06] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:flask.app:Loading Robot
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:15] "[97mPOST /load_robot HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:15] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:19] "[33mGET /registration HTTP/1.1[0m" 404 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:28] "[33mGET /registration HTTP/1.1[0m" 404 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:34] "[33mGET /missionhistory HTTP/1.1[0m" 404 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:52] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:52] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:55] "[33mGET /missionhistory HTTP/1.1[0m" 404 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:20:56] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:00] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:01] "[33mGET /registration HTTP/1.1[0m" 404 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:02] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:03] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:03] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:05] "[33mGET /missionhistory HTTP/1.1[0m" 404 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:06] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:07] "[32mGET / HTTP/1.1[0m" 302 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:07] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:07] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:10] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:10] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:11] "[33mGET /missionhistory HTTP/1.1[0m" 404 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:15] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:15] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:flask.app:Shutting down robot
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:19] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:19] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:19] "[97mPOST /shutdown_robot HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:22] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:flask.app:Loading Robot
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:32] "[97mPOST /load_robot HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:21:32] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:flask.app:Shutting down robot
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:22:00] "[97mPOST /shutdown_robot HTTP/1.1[0m" 200 -
+INFO:werkzeug: * Running on http://0.0.0.0:5000/ (Press CTRL+C to quit)
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:10] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:11] "[32mGET / HTTP/1.1[0m" 302 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:11] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:flask.app:Loading Robot
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:23] "[97mPOST /load_robot HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:23] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:27] "[97mGET /mission HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:27] "[97mGET /static/css/custom.css HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:27] "[97mGET /static/js/general.js HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:27] "[97mGET /static/js/new_ajax_helper.js HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:27] "[97mGET /static/js/mission.js HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:27] "[97mGET /videofeed HTTP/1.1[0m" 200 -
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:27] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+INFO:flask.app:turn on detection
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:25:42] "[97mPOST /turn_on_detection HTTP/1.1[0m" 200 -
+INFO:flask.app:Shutting down robot
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:27:21] "[97mPOST /shutdown_robot HTTP/1.1[0m" 200 -
+INFO:flask.app:Exiting
+INFO:flask.app:Shutting down robot
+INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:27:27] "[97mPOST /exit HTTP/1.1[0m" 200 -
