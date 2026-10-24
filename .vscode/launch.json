@@ -2,15 +2,21 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python - Use Sudo",
-            "type": "python",
-            "program": "${file}",
-            "request": "launch",
-            "console": "integratedTerminal",
-            "args": [
-                "${file}"
+            "name": "Debug in MentorPi container",
+            "type": "debugpy",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}",
+                    "remoteRoot": "/home/ubuntu/shared/MentorPiTemplate"
+                }
             ],
-            "sudo": true
-        }         
+            "preLaunchTask": "debug-in-mentorpi-container",
+            "postDebugTask": "stop-mentorpi-debug"
+        }
     ]
 }

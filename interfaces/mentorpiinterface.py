@@ -24,6 +24,7 @@ Example:
         robot.beep()
 """
 import math
+import os
 import threading
 import time
 
@@ -59,6 +60,10 @@ SCAN_TOPIC = '/scan_raw'
 RGB_IMAGE_TOPIC = '/ascamera/camera_publisher/rgb0/image'
 DEPTH_IMAGE_TOPIC = '/ascamera/camera_publisher/depth0/image_raw'
 
+# Default folder for save_camera_image / save_depth_image (<project>/static/photos).
+PHOTO_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         'static', 'photos')
+
 # Camera gimbal PWM servos (pulse width in microseconds, 1500 = centre).
 CAMERA_TILT_SERVO_ID = 1
 CAMERA_PAN_SERVO_ID = 2
@@ -70,6 +75,12 @@ SERVO_MAX = 2500
 MAX_LINEAR_SPEED = 0.4    # m/s
 MAX_ANGULAR_SPEED = 3.0   # rad/s
 CMD_RATE_HZ = 20.0        # re-publish rate while a timed move is running
+
+
+def _photo_path(prefix, ext):
+    """Timestamped file path in static/photos, e.g. camera_20261024_203015_123.jpg."""
+    stamp = time.strftime('%Y%m%d_%H%M%S') + f'_{int(time.time() * 1000) % 1000:03d}'
+    return os.path.join(PHOTO_DIR, f'{prefix}_{stamp}{ext}')
 
 
 def _clamp(value, low, high):
@@ -441,11 +452,43 @@ class MentorPi:
 
     def take_photo(self, path='photo.jpg'):
         """Save the current camera frame to path. Returns True on success."""
+        return self.save_camera_image(path) is not None
+
+    def save_camera_image(self, path=None, timeout=5.0):
+        """Save the current RGB frame. path defaults to a timestamped .jpg in
+        static/photos. Returns the saved path, or None if no frame arrived."""
         import cv2
-        frame = self.get_camera_image()
+        frame = self.get_camera_image(timeout)
         if frame is None:
-            return False
-        return cv2.imwrite(path, frame)
+            return None
+        path = path or _photo_path('camera', '.jpg')
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        return path if cv2.imwrite(path, frame) else None
+
+    def save_depth_image(self, path=None, colorize=False, timeout=5.0):
+        """Save the current depth frame. path defaults to a timestamped .png in
+        static/photos. By default the raw 16-bit depth (millimetres) is saved
+        losslessly; colorize=True saves a colour-mapped 8-bit image for viewing
+        instead (near = red, far = blue, no reading = black). Returns the saved
+        path, or None if no frame arrived."""
+        import cv2
+        import numpy as np
+        depth = self.get_depth_image(timeout)
+        if depth is None:
+            return None
+        if colorize:
+            valid = depth > 0
+            image = np.zeros((*depth.shape, 3), np.uint8)
+            if valid.any():
+                near, far = depth[valid].min(), depth[valid].max()
+                scaled = (depth.astype(np.float32) - near) / max(far - near, 1)
+                gray = (255 - np.clip(scaled, 0, 1) * 255).astype(np.uint8)
+                image[valid] = cv2.applyColorMap(gray, cv2.COLORMAP_JET)[valid]
+        else:
+            image = depth
+        path = path or _photo_path('depth_color' if colorize else 'depth', '.png')
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        return path if cv2.imwrite(path, image) else None
 
     # ------------------------------------------------------------------ #
     # Servos / camera gimbal
@@ -575,6 +618,11 @@ if __name__ == '__main__':
         print('ahead    :', robot.get_distance_ahead(), 'm')
         img = robot.get_camera_image()
         print('camera   :', None if img is None else img.shape)
+        depth = robot.get_depth_image()
+        print('depth    :', None if depth is None else (depth.shape, depth.dtype))
+        print('saved    :', robot.save_camera_image())
+        print('saved    :', robot.save_depth_image())
+        print('saved    :', robot.save_depth_image(colorize=True))
         robot.turn_on_led(0, 0, 255)
         robot.beep()
         time.sleep(1)
