@@ -18,6 +18,37 @@
             }
         },
         {
+            "label": "debug-in-mentorpi-container",
+            "type": "shell",
+            "command": "docker exec -it -u ubuntu -w /home/ubuntu/shared/MentorPiTemplate MentorPi zsh -ic 'python3 .vscode/debug_in_container.py ${relativeFile}'",
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "python",
+                "pattern": {
+                    "regexp": "^(__never_matches__)(\\d+)(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "message": 3
+                },
+                "background": {
+                    "activeBegins": true,
+                    "beginsPattern": "^__never_matches__$",
+                    "endsPattern": "DEBUGPY_READY"
+                }
+            },
+            "presentation": {
+                "reveal": "always"
+            }
+        },
+        {
+            "label": "stop-mentorpi-debug",
+            "type": "shell",
+            "command": "docker exec MentorPi pkill -f debug_in_container.py || true",
+            "presentation": {
+                "reveal": "never"
+            }
+        },
+        {
             "label": "run-with-sudo",
             "type": "shell",
             "command": "sudo",
