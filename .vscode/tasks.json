@@ -2,6 +2,22 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "run-in-mentorpi-container",
+            "type": "shell",
+            "command": "docker exec -it -u ubuntu -w /home/ubuntu/shared/MentorPiTemplate MentorPi zsh -ic 'python3 ${relativeFile}'",
+            "problemMatcher": [
+                "$python"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "focus": true
+            }
+        },
+        {
             "label": "run-with-sudo",
             "type": "shell",
             "command": "sudo",
