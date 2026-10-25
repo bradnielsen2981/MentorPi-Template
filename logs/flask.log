@@ -85,3 +85,34 @@ INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:27:21] "[97mPOST /shutdown_robo
 INFO:flask.app:Exiting
 INFO:flask.app:Shutting down robot
 INFO:werkzeug:192.168.20.20 - - [24/May/2026 16:27:27] "[97mPOST /exit HTTP/1.1[0m" 200 -
+INFO:app:Login
+INFO:app:Loading Robot
+ERROR:app:Exception on /load_robot [GET]
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/flask/app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/flask/app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/flask/app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/flask/app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+  File "/home/ubuntu/shared/MentorPiTemplate/app.py", line 60, in load_robot
+    ROBOT.reset_arm()
+AttributeError: 'Robot' object has no attribute 'reset_arm'
+INFO:app:turn on detection
+INFO:app:Looking Down
+ERROR:app:Exception on /look_down [GET]
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/flask/app.py", line 1511, in wsgi_app
+    response = self.full_dispatch_request()
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/flask/app.py", line 919, in full_dispatch_request
+    rv = self.handle_user_exception(e)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/flask/app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/flask/app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+  File "/home/ubuntu/shared/MentorPiTemplate/app.py", line 72, in look_down
+    ROBOT.look_down()
+AttributeError: 'Robot' object has no attribute 'look_down'
+INFO:app:stopping robot
