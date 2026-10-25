@@ -7,26 +7,25 @@ import cv2
 
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
-from masterpiinterface import MasterPiInterface
+from mentorpiinterface import MentorPi
 from soundinterface import SoundInterface
 from camerainterface import CameraInterface
 
-class RobotInterface(MasterPiInterface):
-     
+class RobotInterface(MentorPi):
+
     def __init__(self):
         """
-        Initializes the Robot Interface, sets up sound and camera modules, 
+        Initializes the Robot Interface, sets up sound and camera modules,
         and waits for hardware to warm up.
         """
         self.command = "Ready" # keep track of user commands
         self.show_camera = False # only turn this on to see the camera window, will slow down performance when using VNC
         self.SOUND = SoundInterface()
-        
-        self.CAMERA = CameraInterface()
+
+        super().__init__() # connects to the robot through ROS 2
+
+        self.CAMERA = CameraInterface(node=self.node) # shares the robot's ROS connection
         self.CAMERA.start()
-        time.sleep(2) # Camera warmup time since it runs in a background thread now
-        
-        super().__init__()
         self.starttime = time.time() # when did robot get created
         return
     
@@ -202,21 +201,14 @@ class RobotInterface(MasterPiInterface):
             
             # --- LINE CHECK ---
             if 'line' in detection_types or 'all' in detection_types:
-                line_data = data.get('detect_line', {})
-                if line_data.get('found'):
-                    line = line_data['line']
-                    cx = (line[0][0] + line[1][0]) / 2
-                    cy = (line[0][1] + line[1][1]) / 2
-                    
-                    if (480 - cy < distanceto):
-                        angle_rad = np.arctan2(line[1][1] - line[0][1], line[1][0] - line[0][0])
-                        angle = np.degrees(angle_rad)
-                        if -45 < angle < 45: # somewhat horizontal lines
-                            print("Line detected!")
-                            if 'line' not in detections:
-                                detections.append('line')
-                                if len(detections) == confirmlevel:
-                                    break
+                # A crossing line is one running across the robot's path
+                crossing = data.get('detect_line', {}).get('crossing')
+                if crossing and (480 - crossing['y'] < distanceto):
+                    print("Line detected!")
+                    if 'line' not in detections:
+                        detections.append('line')
+                        if len(detections) == confirmlevel:
+                            break
                                 
                 num_detections_processed += 1
                 if num_detections_processed == len(detection_types):
@@ -563,8 +555,8 @@ class RobotInterface(MasterPiInterface):
         self.command = "Shutdown"
         self.stop_command()
         self.CAMERA.stop()
-        self.set_sonarLED_color()
-        self.set_boardLED_color()
+        self.turn_off_led()
+        super().shutdown() # releases the ROS connection
         return
 
 # TEST ROBOT CODE

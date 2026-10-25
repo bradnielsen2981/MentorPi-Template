@@ -4,8 +4,9 @@
 mentorpiinterface.py - simple Python API for the Hiwonder MentorPi (mecanum).
 
 Talks to the robot through the ROS 2 topics published by the stock bringup
-(ros_robot_controller, odom_publisher, imu filter, MS200 lidar, ascamera), so
-the bringup must already be running. Run scripts inside the MentorPi container
+(ros_robot_controller, odom_publisher, imu filter, MS200 lidar), so the
+bringup must already be running. The camera is handled by camerainterface.py.
+Run scripts inside the MentorPi container
 with the ROS environment sourced, e.g.
 
     docker exec -it -u ubuntu MentorPi zsh
@@ -24,7 +25,6 @@ Example:
         robot.beep()
 """
 import math
-import os
 import threading
 import time
 
@@ -35,7 +35,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import Twist, Vector3Stamped
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Image, Imu, LaserScan
+from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import UInt16
 from ros_robot_controller_msgs.msg import (
     BuzzerState, ButtonState, LedState, MotorState, MotorsState, OLEDState,
@@ -57,12 +57,6 @@ IMU_RAW_TOPIC = '/ros_robot_controller/imu_raw'
 IMU_RPY_TOPIC = '/imu/rpy/filtered'
 ODOM_TOPIC = '/odom'                    # EKF fused odometry
 SCAN_TOPIC = '/scan_raw'
-RGB_IMAGE_TOPIC = '/ascamera/camera_publisher/rgb0/image'
-DEPTH_IMAGE_TOPIC = '/ascamera/camera_publisher/depth0/image_raw'
-
-# Default folder for save_camera_image / save_depth_image (<project>/static/photos).
-PHOTO_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                         'static', 'photos')
 
 # Camera gimbal PWM servos (pulse width in microseconds, 1500 = centre).
 CAMERA_TILT_SERVO_ID = 1
@@ -75,12 +69,6 @@ SERVO_MAX = 2500
 MAX_LINEAR_SPEED = 0.4    # m/s
 MAX_ANGULAR_SPEED = 3.0   # rad/s
 CMD_RATE_HZ = 20.0        # re-publish rate while a timed move is running
-
-
-def _photo_path(prefix, ext):
-    """Timestamped file path in static/photos, e.g. camera_20261024_203015_123.jpg."""
-    stamp = time.strftime('%Y%m%d_%H%M%S') + f'_{int(time.time() * 1000) % 1000:03d}'
-    return os.path.join(PHOTO_DIR, f'{prefix}_{stamp}{ext}')
 
 
 def _clamp(value, low, high):
@@ -135,9 +123,6 @@ class MentorPi:
         self._subscribe('battery', UInt16, BATTERY_TOPIC, qos=10)
         self._subscribe('button', ButtonState, BUTTON_TOPIC, qos=10,
                         callback=self._on_button)
-        # Camera topics are subscribed lazily since images are expensive.
-        self._camera_subscribed = set()
-        self._bridge = None
 
         self._executor = MultiThreadedExecutor()
         self._executor.add_node(self.node)
@@ -424,73 +409,6 @@ class MentorPi:
         return self.get_distance(-90.0, width)
 
     # ------------------------------------------------------------------ #
-    # Camera
-    # ------------------------------------------------------------------ #
-    def _ensure_camera(self, key, topic):
-        if key in self._camera_subscribed:
-            return
-        from cv_bridge import CvBridge
-        self._bridge = self._bridge or CvBridge()
-        self._subscribe(key, Image, topic)
-        self._camera_subscribed.add(key)
-
-    def get_camera_image(self, timeout=5.0):
-        """Return the latest RGB camera frame as a BGR numpy array (OpenCV)."""
-        self._ensure_camera('rgb_image', RGB_IMAGE_TOPIC)
-        msg = self._get('rgb_image', timeout)
-        if msg is None:
-            return None
-        return self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-
-    def get_depth_image(self, timeout=5.0):
-        """Return the latest depth frame as a numpy array (uint16, millimetres)."""
-        self._ensure_camera('depth_image', DEPTH_IMAGE_TOPIC)
-        msg = self._get('depth_image', timeout)
-        if msg is None:
-            return None
-        return self._bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-
-    def take_photo(self, path='photo.jpg'):
-        """Save the current camera frame to path. Returns True on success."""
-        return self.save_camera_image(path) is not None
-
-    def save_camera_image(self, path=None, timeout=5.0):
-        """Save the current RGB frame. path defaults to a timestamped .jpg in
-        static/photos. Returns the saved path, or None if no frame arrived."""
-        import cv2
-        frame = self.get_camera_image(timeout)
-        if frame is None:
-            return None
-        path = path or _photo_path('camera', '.jpg')
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        return path if cv2.imwrite(path, frame) else None
-
-    def save_depth_image(self, path=None, colorize=False, timeout=5.0):
-        """Save the current depth frame. path defaults to a timestamped .png in
-        static/photos. By default the raw 16-bit depth (millimetres) is saved
-        losslessly; colorize=True saves a colour-mapped 8-bit image for viewing
-        instead (near = red, far = blue, no reading = black). Returns the saved
-        path, or None if no frame arrived."""
-        import cv2
-        import numpy as np
-        depth = self.get_depth_image(timeout)
-        if depth is None:
-            return None
-        if colorize:
-            valid = depth > 0
-            image = np.zeros((*depth.shape, 3), np.uint8)
-            if valid.any():
-                near, far = depth[valid].min(), depth[valid].max()
-                scaled = (depth.astype(np.float32) - near) / max(far - near, 1)
-                gray = (255 - np.clip(scaled, 0, 1) * 255).astype(np.uint8)
-                image[valid] = cv2.applyColorMap(gray, cv2.COLORMAP_JET)[valid]
-        else:
-            image = depth
-        path = path or _photo_path('depth_color' if colorize else 'depth', '.png')
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        return path if cv2.imwrite(path, image) else None
-
-    # ------------------------------------------------------------------ #
     # Servos / camera gimbal
     # ------------------------------------------------------------------ #
     def set_servo(self, servo_id, pulse, duration=0.5):
@@ -616,13 +534,6 @@ if __name__ == '__main__':
         print('rpy      :', robot.get_orientation())
         print('odometry :', robot.get_odometry())
         print('ahead    :', robot.get_distance_ahead(), 'm')
-        img = robot.get_camera_image()
-        print('camera   :', None if img is None else img.shape)
-        depth = robot.get_depth_image()
-        print('depth    :', None if depth is None else (depth.shape, depth.dtype))
-        print('saved    :', robot.save_camera_image())
-        print('saved    :', robot.save_depth_image())
-        print('saved    :', robot.save_depth_image(colorize=True))
         robot.turn_on_led(0, 0, 255)
         robot.beep()
         time.sleep(1)
