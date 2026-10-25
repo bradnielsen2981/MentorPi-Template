@@ -27,7 +27,7 @@ class Robot(RobotInterface):
     def automated_search(self, timelimit=300):
         """
         Students can write their autonomous logic here!
-        Use self.move_direction_until_detection(), self.pick_up_centered_object_with_look_down(), etc.
+        Use self.move_direction_until_detection(), self.move_toward_colour_detected(), etc.
         """
         self.routine = 'automated_search'
         self.logger.info('Beginning Automated Search')

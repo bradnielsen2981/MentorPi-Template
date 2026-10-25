@@ -33,7 +33,7 @@
         {
             "label": "debug-in-mentorpi-container",
             "type": "shell",
-            "command": "docker exec -it -u ubuntu -w /home/ubuntu/shared/MentorPiTemplate MentorPi zsh -ic 'python3 .vscode/debug_in_container.py ${relativeFile}'",
+            "command": "docker exec MentorPi pkill -f debug_in_container.py; docker exec -it -u ubuntu -w /home/ubuntu/shared/MentorPiTemplate MentorPi bash -c 'source ~/ros2_ws/.robotrc && python3 .vscode/debug_in_container.py ${relativeFile}'",
             "isBackground": true,
             "problemMatcher": {
                 "owner": "python",
@@ -44,8 +44,8 @@
                     "message": 3
                 },
                 "background": {
-                    "activeBegins": true,
-                    "beginsPattern": "^__never_matches__$",
+                    "activeBegins": false,
+                    "beginsPattern": "DEBUGPY_STARTING",
                     "endsPattern": "DEBUGPY_READY"
                 }
             },
