@@ -1,150 +1,210 @@
 # -*- coding: utf-8 -*-
 #!/usr/bin/env python3
-# As soon as the Hiwonder robot starts, an mpg server is running on port 8080
-# any time we want we can get the frame from the stream, and detect objects and lines
+# Camera interface for the Hiwonder MentorPi depth camera (ascamera).
+# Frames come straight from the ROS 2 topics published by the robot's bringup (no video server needed).
+# A background thread runs the requested detection tasks (line, colour, YOLOv5 model, depth) on the
+# newest frame, draws the results and keeps the latest detection data ready for the robot code.
+# Run inside the MentorPi container, where ROS 2 is available.
 
-import sys, os, time, queue, threading, math
+import sys, os, time, threading, math
 import cv2
 import numpy as np
+import yaml
 
-sys.path.append('/home/pi/MasterPi')
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+import rclpy
+from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
+from sensor_msgs.msg import Image
 
-import yaml_handle # lab colours
+RGB_IMAGE_TOPIC = '/ascamera/camera_publisher/rgb0/image'
+DEPTH_IMAGE_TOPIC = '/ascamera/camera_publisher/depth0/image_raw'
+# Reliable, keep only the newest frame. The camera publishes RELIABLE and its large depth frames
+# never arrive on a best-effort (sensor data) subscription.
+CAMERA_QOS = 1
 
-# TRY TO LOAD YOLO MODEL DETECTION USING EDGE TPU
-try:
-    from pycoral.utils.dataset import read_label_file
-    from pycoral.utils.edgetpu import make_interpreter
-    from pycoral.adapters import common
-    from pycoral.adapters import classify
-    from pycoral.utils.edgetpu import list_edge_tpus
-    tpu_devices = list_edge_tpus()
+# Hiwonder's colour calibration (edit with their lab_tool). 'Stereo' is the table for the ascamera depth camera.
+LAB_CONFIG_PATH = '/home/ubuntu/software/lab_tool/lab_config.yaml'
+LAB_CAMERA_TYPE = 'Stereo'
 
-    if tpu_devices and len(tpu_devices) > 0:
-        MODELDETECTION_ENABLED = True
-        print("Edge TPU devices found:", tpu_devices)
-    else:
-        print("No Edge TPU devices detected.")
-        MODELDETECTION_ENABLED = False
-except ImportError as e:
-    print(f"PyCoral not installed or error importing. Model detection disabled. Error: {e}")
-    MODELDETECTION_ENABLED = False
+# YOLOv5 models installed with Hiwonder's yolov5_ros2 package:
+# 'yolov5s' (80 everyday objects - person, cup, chair...), 'traffic_signs_640s_7_0', 'garbage_classification'
+YOLO_MODEL_DIR = '/home/ubuntu/ros2_ws/src/yolov5_ros2/config'
+
+# Default folder for saved pictures (<project>/static/photos)
+PHOTO_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static', 'photos')
+
+DETECTION_TASKS = ['detect_line', 'detect_colour', 'detect_model', 'detect_depth']
+KERNEL = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 
 
-def get_max_contour(contours, min_area=400):
+def image_msg_to_array(msg):
     """
-    Finds the largest contour in a given list of contours that exceeds a minimum area threshold.
-    
+    Converts a ROS sensor_msgs/Image into a numpy array without going through cv_bridge.
+
     Args:
-        contours (list): A list of OpenCV contours.
-        min_area (int, optional): Minimum area required to be considered a valid contour. Defaults to 400.
-        
+        msg (sensor_msgs.msg.Image): A colour (bgr8/rgb8) or depth (16UC1) image message.
+
     Returns:
-        tuple: (area_max_contour, contour_area_max) where area_max_contour is the largest valid contour 
-               (or an empty list if none found), and contour_area_max is its area.
+        numpy.ndarray: BGR uint8 image for colour, uint16 millimetres for depth (0 = no reading).
     """
-    contour_area_max = 0
-    area_max_contour = [] # Return empty list instead of None
-    
+    if msg.encoding in ('bgr8', 'rgb8'):
+        img = np.frombuffer(msg.data, dtype=np.uint8).reshape(msg.height, msg.step)
+        img = img[:, :msg.width * 3].reshape(msg.height, msg.width, 3)
+        return cv2.cvtColor(img, cv2.COLOR_RGB2BGR) if msg.encoding == 'rgb8' else img
+    if msg.encoding in ('16UC1', 'mono16'):
+        return np.frombuffer(msg.data, dtype=np.uint16).reshape(msg.height, msg.step // 2)[:, :msg.width]
+    raise ValueError(f"Unsupported image encoding: {msg.encoding}")
+
+def photo_path(prefix, ext):
+    """Timestamped file path in static/photos, e.g. camera_20261024_203015_123.jpg."""
+    stamp = time.strftime('%Y%m%d_%H%M%S') + f'_{int(time.time() * 1000) % 1000:03d}'
+    return os.path.join(PHOTO_DIR, f'{prefix}_{stamp}{ext}')
+
+def largest_contour(contours, min_area):
+    """
+    Finds the largest contour above a minimum area.
+
+    Returns:
+        tuple: (contour, area), or (None, 0) if no contour is big enough.
+    """
+    best, best_area = None, 0
     for c in contours:
-        contour_area_temp = math.fabs(cv2.contourArea(c))
-        if contour_area_temp > contour_area_max and contour_area_temp > min_area:
-            contour_area_max = contour_area_temp
-            area_max_contour = c
-            
-    return area_max_contour, contour_area_max
-
-def format_dict_with_line_breaks(d, indent=0):
-    """
-    Recursively formats a dictionary into a highly readable string with indentation and line breaks.
-    Useful for printing detection data onto the video frame.
-    
-    Args:
-        d (dict): The dictionary to format.
-        indent (int, optional): The current indentation level (spaces). Defaults to 0.
-        
-    Returns:
-        str: A formatted string representation of the dictionary.
-    """
-    lines = []
-    for key, value in d.items():
-        if isinstance(value, dict):
-            lines.append(f"{' ' * indent}{key}:")
-            lines.append(format_dict_with_line_breaks(value, indent + 4))
-        else:
-            lines.append(f"{' ' * indent}{key}: {value}")
-    return "\n".join(lines)
+        area = cv2.contourArea(c)
+        if area > min_area and area > best_area:
+            best, best_area = c, area
+    return best, best_area
 
 #-------------------------------------------
 # The Camera Object
 class CameraInterface():
 
-    def __init__(self, timelimit=20):
+    def __init__(self, timelimit=20, node=None, use_depth=True):
         """
-        Initializes the Camera Interface, defines detection variables, 
-        loads color calibration data from YAML, and attempts to open the video stream.
-        
+        Initializes the Camera Interface, loads colour calibration data and subscribes to the camera topics.
+
         Args:
             timelimit (int, optional): General timelimit setting. Defaults to 20.
+            node (rclpy.node.Node, optional): An existing ROS node to share (e.g. MentorPi().node, which is
+                                              already being spun). If None, the camera creates and spins its own.
+            use_depth (bool, optional): Subscribe to the depth picture so detections include distances. Defaults to True.
         """
         self.timelimit = timelimit
         np.set_printoptions(suppress=True) # Disable scientific notation for clarity
-        
-        self.reader_thread = None
+
         self.thread = None
+        self.model_thread = None
         self.status = "Init"
-        self.frame = np.zeros((480, 640, 3), dtype=np.uint8) # Default blank frame instead of None
-        self.raw_frame = None # Holds the absolute newest frame from the stream
-        self.new_frame_available = False # Flag to prevent processing the same frame twice
-        
-        self.detection_task_frameskip = { 'detect_line':3, 'detect_model':5, 'detect_colour':2 }
-        self.detection_data = {} 
+        self.mode = "rgb" # 'rgb' shows the colour picture, 'depth' shows the colour-mapped depth picture
+        self.frame = np.zeros((480, 640, 3), dtype=np.uint8) # Latest processed frame with drawings
+        self.frame_id = 0
+        self.rgb_frame = None   # Newest raw colour frame (BGR)
+        self.depth_frame = None # Newest raw depth frame (uint16 millimetres, 0 = no reading)
+        self.rgb_frame_id = 0
+        self.framerate = 0.0
+
+        self.detection_data = {}
         self.detection_tasks = []
         self.detection_colours = []
-        
-        self.detection_model = None
-        self.detection_model_labels = []
-        self.detection_model_confidence_level = 0.7
-        self.input_shape = None
-        self.input_details = None
-        
         self.detect_once = False
-        self.colour_shift = 0 
         self.linecolour = "black"
-        self.min_detection_area = 800
-        self.detection_data_expire_time = 1.0 
+        self.min_detection_area = 800 # Pixels at the full 640x480 resolution
+        self.detection_data_expire_time = 1.0 # Seconds to keep a detection after it is lost (stops flickering)
         self.clear_temp_detection_data = False
-        
+
+        # Line following (Hiwonder method): horizontal strips as (top, bottom, weight), fractions of the frame height.
+        # The strip nearest the robot counts most when working out the steering angle.
+        self.line_rois = ((0.90, 0.95, 0.7), (0.80, 0.85, 0.2), (0.70, 0.75, 0.1))
+        self.line_search_top = 0.4      # Crossing lines are searched for from here down (fraction of height)
+        self.crossing_fraction = 0.5    # A row this full of line colour counts as a crossing line
+
+        # Colour detection runs on a smaller copy of the frame (4x fewer pixels)
+        self.colour_process_size = (320, 240)
+        self.last_colour_centres = {}   # Used to keep following the same blob between frames
+
+        # Depth
+        self.use_depth = False
+        self.depth_display_range = (200, 4000) # Millimetres mapped from red (near) to blue (far) in depth mode
+        self.depth_band = (0.25, 0.70)         # Rows (fractions of height) checked for obstacles, above the floor
+
+        # Neural network detection (YOLOv5 on the Pi's CPU)
+        self.detection_model = None
+        self.detection_model_name = None
+        self.detection_model_labels = []
+        self.detection_model_confidence_level = 0.5
+        self.detection_model_size = 320 # 320 runs at ~3 frames/second, 640 at ~1 but sees smaller objects
+        self.model_framerate = 0.0
+        self._model_result = None
+
         self.output_text = True
         self.output_message = ""
         self.paused = False
         self.drawing = True
-        
-        # Thread Locks to prevent data corruption between the main program and the background processing thread
+
+        # Thread Locks to prevent data corruption between the main program and the background processing threads
         self.dict_lock = threading.Lock()
         self.frame_lock = threading.Lock()
+        self.frame_ready = threading.Condition(self.frame_lock) # Notified every time a new processed frame is ready
         self.task_lock = threading.Lock()
         self.colours_lock = threading.Lock()
         self.clear_lock = threading.Lock()
+        self.model_lock = threading.Lock()
+        self._jpeg = None
+        self._jpeg_key = None
 
         # Load the colours for detection
         try:
-            self.lab_colours = yaml_handle.get_yaml_data(yaml_handle.lab_file_path)
+            with open(LAB_CONFIG_PATH, 'r', encoding='utf-8') as f:
+                self.lab_colours = yaml.safe_load(f)['lab'][LAB_CAMERA_TYPE]
         except Exception as e:
             print(f"Could not load lab colours, using empty dictionary. Error: {e}")
             self.lab_colours = {}
-        
+
+        # Connect to the camera topics
+        self._rgb_msg = None
+        self._depth_msg = None
+        self._new_rgb = threading.Event()
+        self._subscriptions = []
+        self._depth_subscription = None
+        self._executor = None
+        self._owns_node = node is None
+        self._owns_rclpy = False
         try:
-            self.capture = cv2.VideoCapture('http://127.0.0.1:8080?action=stream')
-            if not self.capture.isOpened():
-                raise ValueError("Stream opened but not reading frames.")
-            time.sleep(1)
+            if self._owns_node:
+                if not rclpy.ok():
+                    rclpy.init()
+                    self._owns_rclpy = True
+                self.node = Node('camera_interface')
+                self._executor = SingleThreadedExecutor()
+                self._executor.add_node(self.node)
+                self._spin_thread = threading.Thread(target=self._executor.spin, daemon=True)
+                self._spin_thread.start()
+            else:
+                self.node = node
+            self._subscriptions.append(self.node.create_subscription(Image, RGB_IMAGE_TOPIC, self._rgb_callback, CAMERA_QOS))
+            if use_depth:
+                self.enable_depth()
+            if not self._new_rgb.wait(timeout=5):
+                raise TimeoutError("no camera frames received - is the robot's bringup running?")
             self.status = "Ready"
         except Exception as e:
             self.status = "Fail"
-            self.capture = None
             print(f"Video capture could not be accessed: {e}")
+
+    def _rgb_callback(self, msg):
+        """ROS callback: keeps only the newest colour message. Converting it is left to the processing thread."""
+        self._rgb_msg = msg
+        self._new_rgb.set()
+
+    def _depth_callback(self, msg):
+        """ROS callback: keeps only the newest depth message."""
+        self._depth_msg = msg
+
+    def enable_depth(self):
+        """Subscribes to the depth picture (if not already). Needed for depth mode, detect_depth and distances."""
+        if self._depth_subscription is None and self.node is not None:
+            self._depth_subscription = self.node.create_subscription(Image, DEPTH_IMAGE_TOPIC, self._depth_callback, CAMERA_QOS)
+            self._subscriptions.append(self._depth_subscription)
+        self.use_depth = True
 
     def start(self):
         """
@@ -152,395 +212,477 @@ class CameraInterface():
         """
         if self.status == "Ready":
             self.status = "Running"
-            self.currenttime = time.time()
-            
-            # 1. Start the ultra-fast reader thread to prevent lag
-            self.reader_thread = threading.Thread(target=self._frame_reader, daemon=True)
-            self.reader_thread.start()
-            
-            # 2. Start the heavy processing thread
-            self.thread = threading.Thread(target=self.update, args=(), daemon=True)
+            self.thread = threading.Thread(target=self.update, daemon=True)
             self.thread.start()
-
-    def _frame_reader(self):
-        """
-        Ultra-fast background thread dedicated ONLY to pulling frames off the network stream.
-        This prevents the OpenCV buffer from filling up and causing video lag.
-        """
-        while self.status == "Running":
-            if self.paused:
-                time.sleep(0.01)
-                continue
-                
-            try:
-                ret, img = self.capture.read()
-                if ret and img is not None:
-                    with self.frame_lock:
-                        self.raw_frame = img
-                        self.new_frame_available = True # WE HAVE A NEW IMAGE!
-            except Exception:
-                continue
+            # The neural network is slow, so it runs in its own thread and never holds up line/colour detection
+            self.model_thread = threading.Thread(target=self._model_loop, daemon=True)
+            self.model_thread.start()
 
     def update(self):
         """
-        The core loop executed by the background thread. Processes the newest available frame, 
-        calculates framerate, staggers detection tasks to prevent CPU bottlenecks, draws visual overlays, 
-        and updates the shared data dictionaries safely.
+        The core loop executed by the background thread. Waits for each new camera frame, runs the active
+        detection tasks, draws visual overlays and updates the shared data dictionaries safely.
         """
-        time.sleep(2) # Camera warmup
-
-        framecount = 1 
-        framerate = 0.0
         local_detection_data = {}
+        framecount = 0
+        fps_start = time.time()
 
         while self.status == "Running":
+            # Sleep until the camera delivers a new frame (no busy waiting)
+            if not self._new_rgb.wait(timeout=0.5):
+                continue
+            self._new_rgb.clear()
             if self.paused:
-                time.sleep(0.01)
                 continue
-            
-            # Grab the absolute newest frame ONLY if it is genuinely new
-            current_frame = None
+
+            try:
+                rgb = image_msg_to_array(self._rgb_msg)
+                depth_msg = self._depth_msg if self.use_depth else None
+                depth = image_msg_to_array(depth_msg) if depth_msg is not None else None
+            except Exception as e:
+                print(f"Bad camera frame: {e}")
+                continue
+
             with self.frame_lock:
-                if self.new_frame_available and self.raw_frame is not None:
-                    current_frame = self.raw_frame.copy()
-                    self.new_frame_available = False # Reset the flag!
-            
-            # If no new frame has arrived yet, sleep for a tiny fraction of a millisecond and check again
-            if current_frame is None:
-                time.sleep(0.005)
-                continue
-            
+                self.rgb_frame = rgb
+                self.depth_frame = depth
+                self.rgb_frame_id += 1
+
+            # Frame rate, averaged over each second
+            currenttime = time.time()
+            framecount += 1
+            if currenttime - fps_start >= 1.0:
+                self.framerate = round(framecount / (currenttime - fps_start), 1)
+                framecount, fps_start = 0, currenttime
+
             # Clear the temporary detection data when required
-            if self.clear_temp_detection_data:
-                with self.clear_lock:
+            with self.clear_lock:
+                if self.clear_temp_detection_data:
                     local_detection_data.clear()
-                    self.colour_shift = 0
+                    self.last_colour_centres.clear()
                     self.clear_temp_detection_data = False
-            
+
             with self.task_lock:
-                # Copying lightweight list to avoid locking during entire processing loop
                 current_tasks = list(self.detection_tasks)
 
-            # FRAME SKIP - process average framing
-            currenttime = time.time()
-            if framecount >= 9:
-                framecount = 2
-                elapsedtime = currenttime - self.currenttime
-                self.currenttime = currenttime
-                if elapsedtime > 0:
-                    framerate = round(7 / elapsedtime, 2)
-            framecount += 1
-            
-            taskcomplete = False 
+            if "detect_line" in current_tasks:
+                _, data = self.detect_line(rgb, colour=self.linecolour)
+                local_detection_data['detect_line'] = self._keep_or_expire(local_detection_data.get('detect_line', {}), data, currenttime)
 
-            if current_tasks:
-                # check for line detection
-                if "detect_line" in current_tasks and (framecount % self.detection_task_frameskip['detect_line'] == 0):
-                    if 'detect_line' not in local_detection_data:
-                        local_detection_data['detect_line'] = {}
-
-                    current_frame, data = self.detect_line(current_frame, threshold=100, colour=self.linecolour)
-                    if data.get('found', False):
-                        local_detection_data['detect_line'] = data
+            if "detect_colour" in current_tasks:
+                with self.colours_lock:
+                    colours = list(self.detection_colours)
+                found = local_detection_data.setdefault('detect_colour', {})
+                for colour, data in self.detect_colours(rgb, colours).items():
+                    data = self._keep_or_expire(found.get(colour, {}), data, currenttime)
+                    if data.get('found'):
+                        if depth is not None:
+                            (x, y), (w, h), _ = data['rect']
+                            data['distance'] = self.get_distance_at(x, y, radius=max(3, min(w, h) // 4), depth=depth)
+                        found[colour] = data
                     else:
-                        if local_detection_data['detect_line'].get('found') and (currenttime - local_detection_data['detect_line'].get('time', 0)) > self.detection_data_expire_time:
-                            local_detection_data['detect_line'] = {} 
-                    taskcomplete = True  
+                        found.pop(colour, None)
+                for colour in list(found):
+                    if colour not in colours:
+                        del found[colour]
 
-                # check for colour detection
-                elif "detect_colour" in current_tasks and (framecount % self.detection_task_frameskip['detect_colour'] == 0):
-                    if 'detect_colour' not in local_detection_data:
-                        local_detection_data['detect_colour'] = {}
-                    
-                    with self.colours_lock:
-                        col_count = len(self.detection_colours)
-                        if col_count > 1:
-                            colour = self.detection_colours[self.colour_shift]
-                            self.colour_shift = (self.colour_shift + 1) % col_count
-                        elif col_count == 1:
-                            colour = self.detection_colours[0]
-                        else:
-                            colour = None
-                            self.colour_shift = 0
-                        
-                    if colour and colour in self.lab_colours:
-                        minC = np.array(self.lab_colours[colour]['min'])
-                        maxC = np.array(self.lab_colours[colour]['max'])
-                        
-                        current_frame, data = self.detect_color(current_frame, minC, maxC)
-                        if data.get('found', False):
-                            local_detection_data['detect_colour'][colour] = data
-                        
-                        if colour in local_detection_data['detect_colour']:
-                            if local_detection_data['detect_colour'][colour].get('found') and (currenttime - local_detection_data['detect_colour'][colour].get('time', 0)) > self.detection_data_expire_time:
-                                del local_detection_data['detect_colour'][colour]
-                    taskcomplete = True
+            if "detect_model" in current_tasks:
+                result = self._model_result
+                if result is not None:
+                    data = self._keep_or_expire(local_detection_data.get('detect_model', {}), result, currenttime)
+                    if depth is not None:
+                        for target in data.get('targets', []):
+                            x, y, w, h = target['rect']
+                            target['distance'] = self.get_distance_at(x + w // 2, y + h // 2, radius=max(3, min(w, h) // 4), depth=depth)
+                    local_detection_data['detect_model'] = data
 
-                # use neural network for detection              
-                elif "detect_model" in current_tasks and (framecount % self.detection_task_frameskip['detect_model'] == 0):
-                    if 'detect_model' not in local_detection_data:
-                        local_detection_data['detect_model'] = {}
+            if "detect_depth" in current_tasks and depth is not None:
+                local_detection_data['detect_depth'] = self.detect_depth(depth)
 
-                    current_frame, data = self.detect_model(current_frame)
-                    if data.get('found', False):
-                        local_detection_data['detect_model'] = data
-                    else:
-                        if local_detection_data['detect_model'].get('found') and (currenttime - local_detection_data['detect_model'].get('time', 0)) > self.detection_data_expire_time:
-                            local_detection_data['detect_model'] = {}
-                    taskcomplete = True
+            # Remove data for tasks that have been switched off
+            for task in list(local_detection_data):
+                if task not in current_tasks:
+                    del local_detection_data[task]
 
-                if self.detect_once and taskcomplete:
+            # Detect once: stop after one full round of results (the model result arrives later than the others)
+            if self.detect_once and current_tasks:
+                if "detect_model" not in current_tasks or 'detect_model' in local_detection_data:
                     with self.task_lock:
                         self.detection_tasks.clear()
                     self.detect_once = False
-                    framecount = 1   
 
-            # Draw detection lines and boxes
+            # Choose the picture to show and draw on
+            if self.mode == "depth":
+                display = self.colourise_depth(depth) if depth is not None else np.zeros_like(rgb)
+            else:
+                display = rgb.copy()
+
             if self.drawing and current_tasks:
-                if local_detection_data.get('detect_line', {}).get('found'):
-                    start_point = local_detection_data['detect_line']['line'][0]
-                    end_point = local_detection_data['detect_line']['line'][1]
-                    cv2.line(current_frame, start_point, end_point, (255, 0, 0), 2)
+                self._draw_detections(display, local_detection_data)
 
-                for color, data in local_detection_data.get('detect_colour', {}).items():
-                    if data.get('found'):
-                        box = cv2.boxPoints(data['rect'])
-                        box = np.int0(box) 
-                        cv2.drawContours(current_frame, [box], 0, (0, 255, 0), 2)
-
-                if local_detection_data.get('detect_model', {}).get('found'):
-                    for target in local_detection_data['detect_model']['targets']:
-                        x_min, y_min, width, height = map(int, target['rect'])
-                        x_max, y_max = x_min + width, y_min + height
-                        class_label = target['class']
-                        confidence = target['score']
-
-                        cv2.rectangle(current_frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-                        label = f"Class: {class_label} | {confidence:.2f}"
-                        cv2.putText(current_frame, label, (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-            # Write text
             if self.output_text:
-                cv2.putText(current_frame, f"Frame rate: {framerate}", (10, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1, cv2.LINE_AA)
-                cv2.putText(current_frame, self.output_message, (300, 10), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1, cv2.LINE_AA)
-                self.output_message = "" 
-                
-                if current_tasks:
-                    formatted_text = format_dict_with_line_breaks(local_detection_data)
-                    for i, line in enumerate(formatted_text.split('\n')):
-                        cv2.putText(current_frame, line, (10, 30 + (i * 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 255), 1, cv2.LINE_AA)
+                self._draw_text(display, local_detection_data, current_tasks)
 
             # Update state variables safely
-            with self.frame_lock:
-                self.frame = current_frame
-                
             with self.dict_lock:
-                self.detection_data = local_detection_data.copy()
+                self.detection_data = {k: (dict(v) if isinstance(v, dict) else v) for k, v in local_detection_data.items()}
+            with self.frame_ready:
+                self.frame = display
+                self.frame_id += 1
+                self.frame_ready.notify_all()
 
-    def detect_line(self, frame, threshold=150, colour=None, min_length=240):
+    def _keep_or_expire(self, old, new, now):
+        """Returns the new data if something was found, otherwise keeps the old find until it expires."""
+        if new.get('found'):
+            return new
+        if old.get('found') and now - old.get('time', 0) < self.detection_data_expire_time:
+            return old
+        return new
+
+    def detect_line(self, frame, colour=None):
         """
-        Uses OpenCV Canny edge detection and Probabilistic Hough Transform to find the longest straight line.
-        
+        Hiwonder's line following method. Looks for the line colour in three thin horizontal strips near the
+        bottom of the frame and combines their centres (nearest strip counts most) into a steering angle.
+        Much cheaper than searching the whole picture, and works on curves. Also looks for a crossing line
+        (a line running across the path), useful for stopping at junctions.
+
         Args:
             frame (numpy.ndarray): The current BGR video frame.
-            threshold (int, optional): Accumulator threshold parameter. Defaults to 150.
-            colour (str, optional): Target color to filter by (e.g., 'black', 'white'). Defaults to None.
-            min_length (int, optional): Minimum length of the line in pixels. Defaults to 240.
-                                        WARNING: A 640x480 frame has a maximum diagonal of 800 pixels.
-            
+            colour (str, optional): Line colour from the YAML file (e.g. 'black'). If None or unknown,
+                                    a dark line on a light floor is assumed.
+
         Returns:
-            tuple: (frame, data_dictionary) containing detection success, coordinates, and timestamp.
+            tuple: (frame, data_dictionary). When found, data contains:
+                   'angle'    - steering angle in degrees (+ = line is to the left, turn left; - = turn right)
+                   'offset'   - pixels from the frame centre to the line (- = left, + = right)
+                   'points'   - centre of the line in each strip, nearest first
+                   'line'     - (nearest point, furthest point)
+                   'crossing' - {'found': True, 'y': row} if a line runs across the path
         """
+        h, w = frame.shape[:2]
+        top = int(min(self.line_search_top, min(r[0] for r in self.line_rois)) * h)
+        mask = self._line_mask(frame[top:], colour)
+
+        points = []
+        weighted_sum, weight_used = 0.0, 0.0
+        for r_top, r_bottom, weight in self.line_rois:
+            y0, y1 = int(r_top * h) - top, int(r_bottom * h) - top
+            contours, _ = cv2.findContours(mask[y0:y1], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contour, _ = largest_contour(contours, 30)
+            if contour is not None:
+                (cx, cy), _, _ = cv2.minAreaRect(contour)
+                points.append((int(cx), int(cy) + y0 + top))
+                weighted_sum += cx * weight
+                weight_used += weight
+
         data = {'found': False}
-        
-        if colour and colour in self.lab_colours:
-            minC = np.array(self.lab_colours[colour]['min'])
-            maxC = np.array(self.lab_colours[colour]['max'])
-            frame_lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-            frame_mask = cv2.inRange(frame_lab, minC, maxC)
-        else:
-            frame_mask = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if points:
+            centre = weighted_sum / weight_used
+            angle = math.degrees(-math.atan((centre - w / 2.0) / (h / 2.0)))
+            data = {'found': True, 'angle': round(angle, 1), 'offset': int(centre - w / 2),
+                    'points': points, 'line': (points[0], points[-1]), 'time': time.time()}
 
-        edges = cv2.Canny(frame_mask, 50, 150, apertureSize=3)
-        
-        # Use probabilistic Hough Transform (HoughLinesP) to get actual line segments
-        # minLineLength handles the length filtering natively and efficiently
-        lines = cv2.HoughLinesP(
-            edges, 
-            1, 
-            np.pi/180, 
-            threshold=threshold, 
-            minLineLength=min_length, 
-            maxLineGap=50  # Allows small breaks in the line (e.g., glare or floor seams)
-        )
-
-        if lines is not None:
-            longest_line_length_sq = 0
-            longest_line = []
-
-            for line in lines:
-                # HoughLinesP natively returns the start and end coordinates of the actual segment
-                x1, y1, x2, y2 = line[0]
-
-                # Avoid square root for distance comparison to save CPU cycles
-                line_length_sq = (x2 - x1)**2 + (y2 - y1)**2
-
-                if line_length_sq > longest_line_length_sq:
-                    longest_line_length_sq = line_length_sq
-                    longest_line = ((x1, y1), (x2, y2))
-
-            if longest_line:
-                data = {'found': True, 'line': longest_line, 'time': time.time()}
+        # Crossing line: the lowest (nearest) row that is mostly line colour
+        coverage = mask.mean(axis=1) / 255.0
+        rows = np.where(coverage > self.crossing_fraction)[0]
+        if rows.size:
+            data.update({'found': True, 'crossing': {'found': True, 'y': int(rows.max()) + top}, 'time': time.time()})
+            data.setdefault('points', [])
 
         return frame, data
-    
+
+    def _line_mask(self, region, colour):
+        """Binary mask of the line colour in a region of the frame."""
+        if colour and colour in self.lab_colours:
+            lab = cv2.GaussianBlur(cv2.cvtColor(region, cv2.COLOR_BGR2LAB), (3, 3), 3)
+            mask = cv2.inRange(lab, tuple(self.lab_colours[colour]['min']), tuple(self.lab_colours[colour]['max']))
+        else:
+            grey = cv2.GaussianBlur(cv2.cvtColor(region, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+            _, mask = cv2.threshold(grey, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        return cv2.dilate(cv2.erode(mask, KERNEL), KERNEL)
+
+    def detect_colours(self, frame, colours):
+        """
+        Detects several colours at once. The frame is shrunk and converted to LAB once, then each colour is
+        masked, cleaned up (erode/dilate removes speckles) and the best blob is chosen. If a colour was seen
+        last frame, the blob nearest to it is kept so tracking doesn't jump between objects.
+
+        Args:
+            frame (numpy.ndarray): The current BGR video frame.
+            colours (list): Colour names from the YAML file.
+
+        Returns:
+            dict: colour -> data. When found, data contains 'area', 'rect' ((x, y), (width, height), angle)
+                  in full-frame pixels, and 'time'.
+        """
+        results = {}
+        if not colours:
+            return results
+        small = cv2.resize(frame, self.colour_process_size)
+        lab = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2LAB), (5, 5), 5)
+        scale_x = frame.shape[1] / small.shape[1]
+        scale_y = frame.shape[0] / small.shape[0]
+        min_area = self.min_detection_area / (scale_x * scale_y)
+
+        for colour in colours:
+            if colour not in self.lab_colours:
+                continue
+            mask = cv2.inRange(lab, tuple(self.lab_colours[colour]['min']), tuple(self.lab_colours[colour]['max']))
+            mask = cv2.dilate(cv2.erode(mask, KERNEL), KERNEL)
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            candidates = [(c, cv2.contourArea(c)) for c in contours]
+            candidates = [(c, a) for c, a in candidates if a > min_area]
+            if not candidates:
+                results[colour] = {'found': False}
+                self.last_colour_centres.pop(colour, None)
+                continue
+
+            contour, area = max(candidates, key=lambda c_a: c_a[1])
+            last = self.last_colour_centres.get(colour)
+            if last is not None:
+                def dist(c_a):
+                    (x, y), _ = cv2.minEnclosingCircle(c_a[0])
+                    return math.hypot(x - last[0], y - last[1])
+                nearest = min(candidates, key=dist)
+                if dist(nearest) < 50: # pixels in the small frame
+                    contour, area = nearest
+
+            (bx, by), (bw, bh), angle = cv2.minAreaRect(contour)
+            self.last_colour_centres[colour] = (bx, by)
+            target_rect = ((int(bx * scale_x), int(by * scale_y)), (int(bw * scale_x), int(bh * scale_y)), int(angle))
+            results[colour] = {'found': True, 'area': int(area * scale_x * scale_y), 'rect': target_rect, 'time': time.time()}
+        return results
+
     def detect_color(self, frame, minC, maxC):
         """
-        Detects specific colors in a frame by converting to LAB color space, masking out ranges, 
-        and finding the bounding box of the largest resultant contour.
-        
-        Args:
-            frame (numpy.ndarray): The current BGR video frame.
-            minC (numpy.ndarray): The minimum LAB array boundary.
-            maxC (numpy.ndarray): The maximum LAB array boundary.
-            
+        Detects one LAB colour range in a frame (kept for older code; detect_colours is faster for several colours).
+
         Returns:
-            tuple: (frame, data_dictionary) containing detection success, area, bounding rect coordinates, and timestamp.
+            tuple: (frame, data_dictionary) containing detection success, area, bounding rect and timestamp.
         """
-        frame_lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-        mask = cv2.inRange(frame_lab, minC, maxC)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        max_contour, contour_area_max = get_max_contour(contours, self.min_detection_area)
-        data = { 'found': False }
-        
-        if len(max_contour) > 0: 
-            rect = cv2.minAreaRect(max_contour)
-            (box_x, box_y), (box_w, box_h), angle = rect
-            target_rect = ((int(box_x), int(box_y)), (int(box_w), int(box_h)), int(angle))
-
-            data = { 'found': True, 'area': contour_area_max, 'rect': target_rect, 'time': time.time() }
-
+        self.lab_colours['_custom'] = {'min': list(minC), 'max': list(maxC)}
+        data = self.detect_colours(frame, ['_custom'])['_custom']
+        del self.lab_colours['_custom']
         return frame, data
 
-    def detect_model(self, frame):
+    def detect_depth(self, depth):
         """
-        Uses a Google Coral Edge TPU and a TensorFlow Lite model (e.g., YOLO) to identify objects 
-        in the current frame. Crops/Resizes the frame to the model's required input size, processes 
-        the tensors, and maps bounding boxes back to the original frame scale.
-        
+        Finds the nearest obstacle in front of the robot using the depth picture. Only a band of rows above
+        the floor is checked (see self.depth_band), split into left, centre and right zones.
+
         Args:
-            frame (numpy.ndarray): The current BGR video frame.
-            
+            depth (numpy.ndarray): uint16 depth frame in millimetres (0 = no reading).
+
         Returns:
-            tuple: (frame, data_dictionary) containing detection success, list of identified targets (with boxes, scores, classes), and timestamp.
+            dict: 'nearest' (mm), 'point' (x, y) of the nearest obstacle, 'zones' {'left', 'centre', 'right'} in mm
+                  (None where there is no reading) and 'time'.
         """
-        data = {'found': False} 
+        h, w = depth.shape
+        top = int(self.depth_band[0] * h)
+        band = cv2.medianBlur(np.ascontiguousarray(depth[top:int(self.depth_band[1] * h):4, ::4]), 5) # every 4th pixel, de-speckled
 
-        # Abort if the model isn't loaded or EdgeTPU isn't running
-        if not MODELDETECTION_ENABLED or self.detection_model is None or self.input_details is None:
-            return frame, data
+        zones = {}
+        for name, part in zip(('left', 'centre', 'right'), np.array_split(band, 3, axis=1)):
+            valid = part[part > 0]
+            zones[name] = int(np.percentile(valid, 5)) if valid.size > 20 else None
 
-        # Get original frame dimensions and required model dimensions
-        f_height, f_width, _ = frame.shape
-        input_shape = self.input_details[0]['shape']
-        i_height, i_width = input_shape[1], input_shape[2] 
+        data = {'found': False, 'zones': zones, 'time': time.time()}
+        valid = band > 0
+        if valid.any():
+            masked = np.where(valid, band, np.iinfo(np.uint16).max)
+            row, col = np.unravel_index(np.argmin(masked), masked.shape)
+            data.update({'found': True, 'nearest': int(band[row, col]), 'point': (int(col * 4), int(row * 4 + top))})
+        return data
 
-        # Prepare the image for the neural network
-        scaled_frame = cv2.resize(frame, (i_width, i_height))
-        input_data = np.expand_dims(scaled_frame, axis=0)
-    
-        # Run the EdgeTPU inference
-        self.detection_model.set_tensor(self.input_details[0]['index'], input_data)
-        self.detection_model.invoke()
-
-        # Retrieve the raw output tensor
-        output_details = self.detection_model.get_output_details()
-        output_data = np.squeeze(self.detection_model.get_tensor(output_details[0]['index']))
-
-        # Get quantization parameters to convert int8 back to floats
-        scale, zero_point = output_details[0]['quantization']
-
-        # Extract relevant columns using NumPy slicing (optimized)
-        # YOLO format is [center_x, center_y, width, height]
-        center_x = output_data[:, 0]
-        center_y = output_data[:, 1]
-        width = output_data[:, 2]
-        height = output_data[:, 3]
-        confidence = ((output_data[:, 4] - zero_point) * scale).astype(np.float32)
-
-        class_probabilities = output_data[:, 5:]
-        class_ids = np.argmax(class_probabilities, axis=1)
-
-        # Apply confidence mask early to save processing time on junk data
-        mask = confidence > self.detection_model_confidence_level
-        center_x, center_y = center_x[mask], center_y[mask]
-        width, height = width[mask], height[mask]
-        confidence, class_ids = confidence[mask], class_ids[mask]
-
-        # THE FIX: Convert YOLO center coordinates to top-left OpenCV coordinates
-        x_min_raw = center_x - (width / 2.0)
-        y_min_raw = center_y - (height / 2.0)
-
-        # Scale the coordinates back up to match the original 640x480 video frame
-        scale_x = f_width / i_width
-        scale_y = f_height / i_height
-
-        x = (x_min_raw * scale_x).astype(int)
-        y = (y_min_raw * scale_y).astype(int)
-        width = (width * scale_x).astype(int)
-        height = (height * scale_y).astype(int)
-
-        # Build the preliminary target list
-        targets = [
-            {
-                'rect': [x[i], y[i], width[i], height[i]], 
-                'score': float(confidence[i]), 
-                'class': self.detection_model_labels[class_ids[i]] if class_ids[i] < len(self.detection_model_labels) else "Unknown"
-            } 
-            for i in range(len(x))
-        ]
-
-        # Apply Non-Maximum Suppression (NMS) to remove overlapping duplicate boxes
-        if targets:
-            boxes = np.array([t['rect'] for t in targets])
-            scores = np.array([t['score'] for t in targets])
-
-            indices = cv2.dnn.NMSBoxes(boxes.tolist(), scores.tolist(), score_threshold=0.3, nms_threshold=0.4)
-            
-            if len(indices) > 0:
-                # Handle different OpenCV versions returning NMS indices differently
-                filtered_targets = [targets[i[0] if isinstance(i, (list, np.ndarray)) else i] for i in indices]
-
-                data['found'] = True
-                data['time'] = time.time()
-                data['targets'] = filtered_targets
-
-        return frame, data
-
-    def load_detection_model(self, model_file="models/yolov5s-int8-224_edgetpu.tflite", classes_file="models/coco.names"):
+    def get_distance_at(self, x, y, radius=5, depth=None):
         """
-        Loads the TFLite neural network model into the PyCoral interpreter and loads COCO human-readable labels.
-        """
-        if not MODELDETECTION_ENABLED:
-            print("Edge TPU not enabled/working.")
-            return
+        Returns the distance to whatever is at pixel (x, y), using the median of the depth readings around it.
+        The depth picture lines up with the colour picture, so detection coordinates can be used directly.
 
+        Args:
+            x, y (int): Pixel coordinates in the 640x480 frame.
+            radius (int, optional): Half-size of the square of pixels used. Defaults to 5.
+
+        Returns:
+            int: Distance in millimetres, or None if there is no depth reading there.
+        """
+        if depth is None:
+            with self.frame_lock:
+                depth = self.depth_frame
+        if depth is None:
+            return None
+        h, w = depth.shape
+        x, y, radius = int(x), int(y), int(radius)
+        window = depth[max(0, y - radius):min(h, y + radius + 1), max(0, x - radius):min(w, x + radius + 1)]
+        valid = window[window > 0]
+        return int(np.median(valid)) if valid.size else None
+
+    def colourise_depth(self, depth):
+        """
+        Turns a depth frame into a colour picture for viewing: near = red, far = blue, no reading = black.
+        Uses a fixed range (self.depth_display_range) so colours don't flicker between frames.
+        """
+        near, far = self.depth_display_range
+        scaled = (np.clip(depth, near, far).astype(np.float32) - near) * (255.0 / (far - near))
+        image = cv2.applyColorMap((255 - scaled).astype(np.uint8), cv2.COLORMAP_JET)
+        image[depth == 0] = 0
+        return image
+
+    def _model_loop(self):
+        """
+        Background thread that runs the neural network on the newest frame whenever 'detect_model' is active.
+        Results are picked up by the main loop, which also adds distances.
+        """
+        last_frame_id = -1
+        while self.status == "Running":
+            with self.task_lock:
+                active = "detect_model" in self.detection_tasks
+            with self.model_lock:
+                model, labels = self.detection_model, self.detection_model_labels
+            if self.paused or not active or model is None:
+                time.sleep(0.05)
+                continue
+            with self.frame_lock:
+                rgb, frame_id = self.rgb_frame, self.rgb_frame_id
+            if rgb is None or frame_id == last_frame_id:
+                time.sleep(0.01)
+                continue
+            last_frame_id = frame_id
+
+            starttime = time.time()
+            try:
+                results = model.predict(cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB), size=self.detection_model_size)
+                predictions = results.pred[0].cpu().numpy()
+            except Exception as e:
+                print(f"Model detection failed: {e}")
+                time.sleep(1)
+                continue
+
+            targets = []
+            for x1, y1, x2, y2, score, class_id in predictions:
+                if score < self.detection_model_confidence_level:
+                    continue
+                class_id = int(class_id)
+                targets.append({
+                    'class': labels[class_id] if class_id < len(labels) else "Unknown",
+                    'score': round(float(score), 2),
+                    'rect': [int(x1), int(y1), int(x2 - x1), int(y2 - y1)], # x, y (top-left), width, height
+                })
+            elapsed = time.time() - starttime
+            self.model_framerate = round(1 / elapsed, 1) if elapsed > 0 else 0.0
+            self._model_result = {'found': bool(targets), 'targets': targets, 'time': time.time()}
+
+    def load_detection_model(self, model="yolov5s", size=None, confidence=None):
+        """
+        Loads one of Hiwonder's YOLOv5 models. It runs on the Pi's CPU: about 3 frames/second at size 320.
+
+        Args:
+            model (str, optional): 'yolov5s' (80 everyday objects - person, cup, chair...), 'traffic_signs_640s_7_0',
+                                   'garbage_classification', or a path to a .pt file. Defaults to 'yolov5s'.
+            size (int, optional): Image size the model works at (320 or 640). Defaults to self.detection_model_size.
+            confidence (float, optional): Minimum score (0-1) to report a target.
+
+        Returns:
+            bool: True if the model is ready.
+        """
+        if size:
+            self.detection_model_size = size
+        if confidence is not None:
+            self.detection_model_confidence_level = confidence
+        if self.detection_model is not None and self.detection_model_name == model:
+            return True
+
+        path = model if model.endswith('.pt') else os.path.join(YOLO_MODEL_DIR, model + '.pt')
         try:
-            self.detection_model = make_interpreter(model_file)
-            self.detection_model.allocate_tensors()
-            self.input_details = self.detection_model.get_input_details()
-            
-            with open(classes_file, "r") as f:
-                self.detection_model_labels = [line.strip() for line in f.readlines()] 
+            from yolov5 import YOLOv5 # imported here because loading PyTorch takes a few seconds
+            yolo = YOLOv5(path, device='cpu')
+            names = yolo.model.names
+            labels = [names[i] for i in sorted(names)] if isinstance(names, dict) else list(names)
         except Exception as e:
-            print(f"Failed to load model or labels: {e}")
+            print(f"Failed to load model {path}: {e}")
+            return False
+
+        with self.model_lock:
+            self.detection_model = yolo
+            self.detection_model_name = model
+            self.detection_model_labels = labels
+        self._model_result = None
+        return True
+
+    def clear_detection_model(self):
+        """Removes the neural network model and its labels from memory."""
+        with self.model_lock:
             self.detection_model = None
+            self.detection_model_name = None
+            self.detection_model_labels = []
+        self._model_result = None
+
+    def _draw_detections(self, frame, data):
+        """Draws lines, boxes and distances for the current detection data onto the frame."""
+        line = data.get('detect_line', {})
+        if line.get('found'):
+            points = line.get('points', [])
+            for point in points:
+                cv2.circle(frame, point, 5, (0, 0, 255), -1)
+            if len(points) > 1:
+                cv2.polylines(frame, [np.array(points)], False, (255, 0, 0), 2)
+            if 'angle' in line:
+                cv2.putText(frame, f"angle {line['angle']}", (points[0][0] + 10, points[0][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+            crossing = line.get('crossing')
+            if crossing:
+                cv2.line(frame, (0, crossing['y']), (frame.shape[1], crossing['y']), (255, 0, 255), 2)
+
+        for colour, colour_data in data.get('detect_colour', {}).items():
+            if colour_data.get('found'):
+                box = np.intp(cv2.boxPoints(colour_data['rect']))
+                cv2.drawContours(frame, [box], 0, (0, 255, 0), 2)
+                (x, y), _, _ = colour_data['rect']
+                label = colour if colour_data.get('distance') is None else f"{colour} {colour_data['distance']}mm"
+                cv2.putText(frame, label, (x - 20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        model = data.get('detect_model', {})
+        for target in model.get('targets', []):
+            x, y, w, h = target['rect']
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 255), 2)
+            label = f"{target['class']} {target['score']:.2f}"
+            if target.get('distance') is not None:
+                label += f" {target['distance']}mm"
+            cv2.putText(frame, label, (x, max(10, y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+        depth = data.get('detect_depth', {})
+        if depth.get('found'):
+            cv2.circle(frame, depth['point'], 8, (255, 255, 255), 2)
+            cv2.putText(frame, f"{depth['nearest']}mm", (depth['point'][0] + 10, depth['point'][1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    def _draw_text(self, frame, data, tasks):
+        """Writes the frame rate, mode, custom message and a short summary of each detection onto the frame."""
+        lines = [f"FPS: {self.framerate}  Mode: {self.mode}  {self.output_message}"]
+        self.output_message = ""
+        if 'detect_line' in tasks:
+            line = data.get('detect_line', {})
+            text = f"angle {line['angle']} offset {line['offset']}" if 'angle' in line else "not found"
+            if line.get('crossing'):
+                text += f"  crossing y={line['crossing']['y']}"
+            lines.append(f"Line: {text}")
+        if 'detect_colour' in tasks:
+            found = [f"{c} {d.get('distance') or ''}" for c, d in data.get('detect_colour', {}).items()]
+            lines.append("Colour: " + (", ".join(found) if found else "none"))
+        if 'detect_model' in tasks:
+            if self.detection_model is None:
+                lines.append("Model: not loaded")
+            else:
+                targets = data.get('detect_model', {}).get('targets', [])
+                lines.append(f"Model ({self.model_framerate} fps): " + (", ".join(t['class'] for t in targets) or "none"))
+        if 'detect_depth' in tasks:
+            zones = data.get('detect_depth', {}).get('zones', {})
+            lines.append("Depth mm: " + "  ".join(f"{k} {v}" for k, v in zones.items()))
+        for i, text in enumerate(lines):
+            cv2.putText(frame, text, (10, 15 + i * 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 1, cv2.LINE_AA)
 
     def get_frame(self):
         """
-        Thread-safe method to get the current video frame.
-        
+        Thread-safe method to get the current processed video frame (colour or depth picture, depending on the mode).
+
         Returns:
             numpy.ndarray: The current image frame (or a blank frame if unavailable).
         """
@@ -549,202 +691,270 @@ class CameraInterface():
             if self.frame is None:
                 return np.zeros((480, 640, 3), dtype=np.uint8)
             return self.frame.copy()
-    
+
+    def get_rgb_frame(self):
+        """Returns the newest raw colour frame (BGR, no drawings), or None."""
+        with self.frame_lock:
+            return None if self.rgb_frame is None else self.rgb_frame.copy()
+
+    def get_depth_frame(self):
+        """Returns the newest raw depth frame (uint16 millimetres, 0 = no reading), or None."""
+        with self.frame_lock:
+            return None if self.depth_frame is None else self.depth_frame.copy()
+
     def get_jpeg_frame(self, quality=50):
         """
         Thread-safe method to retrieve the current frame encoded as JPEG bytes.
-        Ideal for passing to a Flask or web server for remote streaming.
-        
+        Ideal for passing to a Flask or web server for remote streaming. If this frame has already been
+        sent, it waits for the next one, so a streaming loop runs at the camera's rate instead of
+        encoding the same picture over and over.
+
         Args:
             quality (int, optional): JPEG encoding quality (0-100). Defaults to 50.
-            
+
         Returns:
             bytes: The JPEG encoded image.
         """
-        with self.frame_lock:
-            frame_to_encode = self.frame if self.frame is not None else np.zeros((480, 640, 3), dtype=np.uint8)
-            
-        ret, jpeg = cv2.imencode('.jpg', frame_to_encode, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-        if ret:
-            return jpeg.tobytes()
-        
-        # Absolute fallback if encoding fails (should be rare)
-        _, fallback = cv2.imencode('.jpg', np.zeros((480, 640, 3), dtype=np.uint8))
-        return fallback.tobytes()
-    
-    def save_frame_as_image(self):
-        """Saves the current video frame to the local disk as 'frame.jpg'."""
-        with self.frame_lock:
-            if self.frame is not None:
-                cv2.imwrite('frame.jpg', self.frame)
-            
+        with self.frame_ready:
+            if self._jpeg_key == (self.frame_id, quality) and self.status == "Running":
+                self.frame_ready.wait(timeout=0.5)
+            frame_to_encode, key = self.frame, (self.frame_id, quality)
+
+        if key != self._jpeg_key or self._jpeg is None:
+            ret, jpeg = cv2.imencode('.jpg', frame_to_encode, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+            if not ret: # Absolute fallback if encoding fails (should be rare)
+                _, jpeg = cv2.imencode('.jpg', np.zeros((480, 640, 3), dtype=np.uint8))
+            self._jpeg, self._jpeg_key = jpeg.tobytes(), key
+        return self._jpeg
+
+    def _save_image(self, image, path):
+        """Writes an image, creating its folder if needed. Returns the path, or None on failure."""
+        if image is None:
+            return None
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        return path if cv2.imwrite(path, image) else None
+
+    def save_frame_as_image(self, path=None, drawings=True):
+        """
+        Saves the current video frame as a JPEG.
+
+        Args:
+            path (str, optional): Where to save. Defaults to a timestamped file in static/photos.
+            drawings (bool, optional): True saves the frame as shown (detections drawn, depth picture in depth mode),
+                                       False saves the plain colour picture. Defaults to True.
+
+        Returns:
+            str: The saved path, or None if there was no frame.
+        """
+        image = self.get_frame() if drawings else self.get_rgb_frame()
+        return self._save_image(image, path or photo_path('camera', '.jpg'))
+
+    def save_depth_image(self, path=None, colourise=False):
+        """
+        Saves the current depth frame as a PNG.
+
+        Args:
+            path (str, optional): Where to save. Defaults to a timestamped file in static/photos.
+            colourise (bool, optional): False saves the raw 16-bit depth (millimetres) losslessly, for measuring later.
+                                        True saves a colour picture for viewing (near = red, far = blue). Defaults to False.
+
+        Returns:
+            str: The saved path, or None if there was no depth frame.
+        """
+        depth = self.get_depth_frame()
+        if depth is not None and colourise:
+            depth = self.colourise_depth(depth)
+        return self._save_image(depth, path or photo_path('depth_colour' if colourise else 'depth', '.png'))
+
+    def set_mode(self, mode):
+        """
+        Chooses which picture is shown and streamed. Detection always uses the colour picture.
+
+        Args:
+            mode (str): 'rgb' for the normal colour picture, 'depth' for the colour-mapped depth picture.
+        """
+        if mode not in ('rgb', 'depth'):
+            print("Mode must be 'rgb' or 'depth'")
+            return
+        if mode == 'depth':
+            self.enable_depth()
+        self.mode = mode
+
+    def turn_on_depth_mode(self):
+        """Shows the depth picture (near = red, far = blue) instead of the colour picture."""
+        self.set_mode('depth')
+
+    def turn_off_depth_mode(self):
+        """Goes back to showing the colour picture."""
+        self.set_mode('rgb')
+
+    def toggle_mode(self):
+        """Switches between the colour and depth pictures. Returns the new mode."""
+        self.set_mode('rgb' if self.mode == 'depth' else 'depth')
+        return self.mode
+
     def get_detection_data(self):
         """
         Thread-safe method to retrieve the most recent detection data.
-        
+
         Returns:
             dict: A copy of the detection dictionary.
         """
         with self.dict_lock:
             return self.detection_data.copy()
-        
+
     def clear_detection_data(self):
         """Clears out the active detection dictionary securely."""
         with self.dict_lock:
             self.detection_data.clear()
         with self.clear_lock:
             self.clear_temp_detection_data = True
-    
+        self._model_result = None
+
     def add_detection_task(self, task, detect_once=False):
         """
         Adds a specific vision task to the active background polling cycle.
-        
+
         Args:
-            task (str): One of 'detect_line', 'detect_colour', or 'detect_model'.
-            detect_once (bool, optional): If True, removes the task after the first successful frame. Defaults to False.
+            task (str): One of 'detect_line', 'detect_colour', 'detect_model' or 'detect_depth'.
+            detect_once (bool, optional): If True, removes the tasks after the first round of results. Defaults to False.
         """
-        if task not in ['detect_line', 'detect_colour', 'detect_model']:
-            print("Task must be one of: detect_line, detect_colour, detect_model")
+        if task not in DETECTION_TASKS:
+            print("Task must be one of: " + ", ".join(DETECTION_TASKS))
             return
+        if task == 'detect_depth':
+            self.enable_depth()
+        if task == 'detect_model' and self.detection_model is None:
+            self.load_detection_model()
 
         with self.task_lock:
             if task not in self.detection_tasks:
                 self.detect_once = detect_once
                 self.detection_tasks.append(task)
-    
+
     def set_detection_tasks(self, tasks=None):
         """
         Overrides the current list of detection tasks with a new list.
-        
+
         Args:
             tasks (list, optional): List of strings representing new tasks. Defaults to empty list.
         """
-        if tasks is None:
-            tasks = []
-        for task in tasks:
+        self.clear_detection_tasks()
+        for task in tasks or []:
             self.add_detection_task(task)
-    
+
     def clear_detection_tasks(self):
         """Removes all currently active detection tasks from the polling cycle."""
         with self.task_lock:
             self.detection_tasks.clear()
-    
+
     def detect_all(self, exclude_colours=None):
         """
-        Helper method to instantly activate all available detection methods (lines, models, colors).
-        
+        Helper method to activate all available detection methods (lines, colours, model, depth).
+
         Args:
-            exclude_colours (list, optional): Colors in the YAML file to ignore. Defaults to ['black', 'white'].
+            exclude_colours (list, optional): Colours in the YAML file to ignore. Defaults to ['black', 'white'].
         """
         if exclude_colours is None:
             exclude_colours = ['black', 'white']
-            
+
         self.add_detection_task('detect_colour')
         self.add_detection_task('detect_line')
-        self.load_detection_model()
         self.add_detection_task('detect_model')
-        
-        with self.colours_lock:
-            self.detection_colours = list(self.lab_colours.keys())
-            for colour in exclude_colours:
-                if colour in self.detection_colours:
-                    self.detection_colours.remove(colour)
+        if self.use_depth:
+            self.add_detection_task('detect_depth')
 
-    def turn_on_output_text(self): 
+        with self.colours_lock:
+            self.detection_colours = [c for c in self.lab_colours if c not in exclude_colours]
+
+    def turn_on_output_text(self):
         """Enables on-screen text overlays for framerate and data."""
         self.output_text = True
-        
-    def turn_off_output_text(self): 
+
+    def turn_off_output_text(self):
         """Disables on-screen text overlays."""
         self.output_text = False
-        
-    def set_output_message(self, message): 
+
+    def set_output_message(self, message):
         """
         Sets a custom text string to display on the video feed.
-        
+
         Args:
             message (str): The text message to display.
         """
         self.output_message = message
-    
+
     def remove_detection_task(self, task):
         """
         Removes a single specific task from the active task list.
-        
+
         Args:
             task (str): The name of the task to remove.
         """
         with self.task_lock:
             if task in self.detection_tasks:
                 self.detection_tasks.remove(task)
-    
+
     def end_detection(self):
         """Helper method that stops all tasks, wipes active data, and clears target colors simultaneously."""
         self.clear_detection_tasks()
         self.clear_detection_data()
         self.clear_detection_colours()
-    
-    def turn_on_drawing(self): 
+
+    def turn_on_drawing(self):
         """Enables drawing bounding boxes, lines, and rects on the frame."""
         self.drawing = True
-        
-    def turn_off_drawing(self): 
+
+    def turn_off_drawing(self):
         """Disables drawing visual elements on the frame to save processing time."""
         self.drawing = False
-    
+
     def add_detection_colour(self, colour):
         """
         Adds a named color (from the YAML file) to the active searching rotation.
-        
+
         Args:
             colour (str): The name of the color to search for (e.g., 'red', 'green').
         """
         with self.colours_lock:
             if colour not in self.detection_colours:
                 self.detection_colours.append(colour)
-    
+
     def set_detection_colours(self, colourlist=None):
         """
         Overrides the current color searching rotation with a specific list.
-        
+
         Args:
             colourlist (list, optional): List of color name strings. Defaults to empty list.
         """
-        if colourlist is None:
-            colourlist = []
         with self.colours_lock:
-            self.detection_colours = colourlist
-            
+            self.detection_colours = list(colourlist or [])
+
     def set_line_detection_colour(self, colour):
         """
         Sets a specific mask color for the line detection tracking.
-        
+
         Args:
             colour (str): Color string name from the YAML settings.
         """
         self.linecolour = colour
-        
-    def clear_detection_model(self):
-        """Removes the TensorFlow Lite model and associated labels from memory."""
-        self.detection_model = None
-        self.detection_model_labels = []
-        
+
     def remove_detection_colour(self, colour):
         """
         Removes a single specific color from the searching rotation.
-        
+
         Args:
             colour (str): The string name of the color to stop tracking.
         """
         with self.colours_lock:
             if colour in self.detection_colours:
                 self.detection_colours.remove(colour)
-                
+
     def clear_detection_colours(self):
         """Stops the robot from tracking any specific colors by emptying the list."""
         with self.colours_lock:
             self.detection_colours.clear()
-            
+
     def create_detection_window(self):
         """Opens a standard OpenCV GUI window named 'Detection Mode' on the host screen."""
         cv2.namedWindow('Detection Mode')
@@ -753,111 +963,138 @@ class CameraInterface():
     def test_detection_performance(self, duration_per_task=5, show_window=True):
         """
         A standalone profiler to test the camera's performance without needing the full RobotInterface.
-        Cycles through a baseline and each detection algorithm.
-        
+        Cycles through a baseline, each detection algorithm and depth mode, printing the frame rate of each.
+
         Args:
             duration_per_task (int): How long to run each task in seconds. Defaults to 5.
             show_window (bool): Whether to render the OpenCV window. Defaults to True.
         """
-        tasks_to_test = ['baseline', 'detect_line', 'detect_colour', 'detect_model']
-        
+        tasks_to_test = ['baseline', 'detect_line', 'detect_colour', 'detect_model', 'detect_depth', 'depth_mode']
+
         # Pre-load dependencies
         self.set_detection_colours(['red', 'green', 'blue'])
         self.load_detection_model()
-        self.turn_on_output_text() 
-        
+        self.turn_on_output_text()
+
         if show_window:
             self.create_detection_window()
-        
+
         print("\n========================================")
         print(" STARTING STANDALONE CAMERA PROFILER")
         print("========================================\n")
-        
+
         abort_test = False
-        
+
         for task in tasks_to_test:
             if abort_test:
                 break
-                
+
             # Clear previous tasks and data
             self.clear_detection_tasks()
-            self.clear_detection_data() 
-            
+            self.clear_detection_data()
+            self.set_mode('rgb')
+
             if task == 'baseline':
                 print(f">>> Testing 'Baseline (No Detection)' for {duration_per_task} seconds...")
-                self.set_output_message("BASELINE - RAW FEED")
+                message = "BASELINE - RAW FEED"
+            elif task == 'depth_mode':
+                print(f">>> Testing 'Depth mode' for {duration_per_task} seconds...")
+                self.set_mode('depth')
+                self.add_detection_task('detect_depth')
+                message = "DEPTH MODE"
             else:
                 print(f">>> Testing '{task}' for {duration_per_task} seconds...")
                 self.add_detection_task(task)
-                self.set_output_message(task.upper())
-            
+                message = task.upper()
+
             endtime = time.time() + duration_per_task
-            
+
             # Run the specific task for the allotted time
             while (time.time() < endtime) and self.status == "Running":
+                self.set_output_message(message)
                 if show_window:
                     frame = self.get_frame()
                     if frame.size > 0:
                         cv2.imshow('Detection Mode', frame)
-                    
+
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         abort_test = True
                         break
                 else:
                     # CPU saver for headless mode
                     time.sleep(0.03)
-            
+
+            extra = f", model {self.model_framerate} fps" if task == 'detect_model' else ""
+            print(f"    frame rate: {self.framerate} fps{extra}")
+            print(f"    data: {self.get_detection_data()}")
+
             if abort_test:
                 print("\n[!] Test aborted by user.")
-                break 
-                
+                break
+
         print("\n========================================")
         print(" PROFILER COMPLETE ")
         print("========================================\n")
-        
+
         # Clean up
         self.set_output_message("")
+        self.set_mode('rgb')
         self.end_detection()
-        
+
         if show_window:
             cv2.destroyAllWindows()
-            
+
         return
-        
+
     def stop(self):
         """
-        Initiates a graceful shutdown of the background camera threads and releases 
-        the video capture device bindings.
+        Initiates a graceful shutdown of the background camera threads and releases the camera subscriptions.
         """
         self.status = "Stop"
-        time.sleep(2)
-        if self.capture:
-            self.capture.release()
-            
+        with self.frame_ready:
+            self.frame_ready.notify_all()
+        for thread in (self.thread, self.model_thread):
+            if thread and thread is not threading.current_thread():
+                thread.join(timeout=2)
+        try:
+            for subscription in self._subscriptions:
+                self.node.destroy_subscription(subscription)
+            self._subscriptions.clear()
+            self._depth_subscription = None
+            if self._owns_node and self.node is not None:
+                self._executor.shutdown()
+                self._spin_thread.join(timeout=2)
+                self.node.destroy_node()
+                self.node = None
+                if self._owns_rclpy and rclpy.ok():
+                    rclpy.shutdown()
+        except Exception as e:
+            print(f"Camera shutdown problem: {e}")
+
     def pause(self):
         """Temporarily halts the processing of new frames in the background thread."""
         print("Pausing Camera")
         self.paused = True
-        
+
     def resume(self):
         """Resumes the processing of frames in the background thread."""
         print("Resuming Camera")
         self.paused = False
 
-# TEST CAMERA CODE 
+# TEST CAMERA CODE
 if __name__ == '__main__':
     input("Please press enter to begin standalone camera test: ")
     CAMERA = CameraInterface()
     print("\033c")
-    
+
     try:
         # 1. Start the background threads
         CAMERA.start()
         time.sleep(2) # Give the camera and threads a moment to initialize
-        
-        # 2. Let the built-in profiler take over!
-        CAMERA.test_detection_performance(duration_per_task=10, show_window=True)
-        
+
+        # 2. Let the built-in profiler take over! (show_window needs a display, e.g. VNC)
+        CAMERA.test_detection_performance(duration_per_task=10, show_window=bool(os.environ.get('DISPLAY')))
+
     except KeyboardInterrupt:
         # Catch Ctrl+C gracefully
         print("\n[!] Interrupted by user.")

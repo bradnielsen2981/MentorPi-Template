@@ -1,0 +1,9 @@
+# Python cache files (regenerated automatically)
+__pycache__/
+*.pyc
+
+# Secrets such as API keys - never commit these
+.env
+
+# Crash dumps
+core
