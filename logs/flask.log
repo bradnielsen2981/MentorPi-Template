@@ -116,3 +116,42 @@ Traceback (most recent call last):
     ROBOT.look_down()
 AttributeError: 'Robot' object has no attribute 'look_down'
 INFO:app:stopping robot
+INFO:app:Login
+INFO:app:Loading Robot
+INFO:app:Looking Down
+INFO:app:stopping robot
+INFO:werkzeug:[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.20.33:5000
+INFO:werkzeug:[33mPress CTRL+C to quit[0m
+INFO:werkzeug:[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.20.33:5000
+INFO:werkzeug:[33mPress CTRL+C to quit[0m
+INFO:app:Login
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:01:49] "GET / HTTP/1.1" 200 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:01:49] "GET /static/js/general.js HTTP/1.1" 200 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:01:49] "GET /static/js/new_ajax_helper.js HTTP/1.1" 200 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:01:49] "GET /static/css/custom.css HTTP/1.1" 200 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:01:49] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+INFO:app:Login
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:01:56] "POST / HTTP/1.1" 200 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:01:56] "[36mGET /static/css/custom.css HTTP/1.1[0m" 304 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:01:56] "[36mGET /static/js/new_ajax_helper.js HTTP/1.1[0m" 304 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:01:56] "[36mGET /static/js/general.js HTTP/1.1[0m" 304 -
+INFO:app:Login
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:04] "[32mPOST / HTTP/1.1[0m" 302 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:04] "GET /mission HTTP/1.1" 200 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:04] "[36mGET /static/css/custom.css HTTP/1.1[0m" 304 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:04] "[36mGET /static/js/new_ajax_helper.js HTTP/1.1[0m" 304 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:04] "[36mGET /static/js/general.js HTTP/1.1[0m" 304 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:04] "GET /static/js/mission.js HTTP/1.1" 200 -
+INFO:app:Loading Robot
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:19] "POST /load_robot HTTP/1.1" 200 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:19] "GET /videofeed HTTP/1.1" 200 -
+INFO:app:turn on detection
+INFO:app:turn off detection
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:38] "POST /turn_off_detection HTTP/1.1" 200 -
+INFO:werkzeug:192.168.20.16 - - [25/Oct/2026 13:02:58] "POST /turn_on_detection HTTP/1.1" 200 -
