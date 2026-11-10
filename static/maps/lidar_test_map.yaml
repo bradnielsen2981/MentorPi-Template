@@ -1,0 +1,7 @@
+image: lidar_test_map.pgm
+mode: trinary
+resolution: 0.05000000074505806
+origin: [-3.844709428892769, -4.658358393227148, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.25

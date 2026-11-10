@@ -1,0 +1,12 @@
+[INFO] [launch]: All log files can be found below /root/.ros/log/2026-10-29-12-09-48-333649-raspberrypi-349179
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [sync_slam_toolbox_node-1]: process started with pid [349532]
+[sync_slam_toolbox_node-1] [INFO] [1793275788.476973537] [slam_toolbox]: Node using stack size 40000000
+[sync_slam_toolbox_node-1] [INFO] [1793275788.567923110] [slam_toolbox]: Using solver plugin solver_plugins::CeresSolver
+[sync_slam_toolbox_node-1] [INFO] [1793275788.568421218] [slam_toolbox]: CeresSolver: Using SCHUR_JACOBI preconditioner.
+[sync_slam_toolbox_node-1] Registering sensor: [Custom Described Lidar]
+[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+[ERROR] [sync_slam_toolbox_node-1]: process[sync_slam_toolbox_node-1] failed to terminate '5' seconds after receiving 'SIGINT', escalating to 'SIGTERM'
+[INFO] [sync_slam_toolbox_node-1]: sending signal 'SIGTERM' to process[sync_slam_toolbox_node-1]
+[sync_slam_toolbox_node-1] [INFO] [1793275826.882550766] [rclcpp]: signal_handler(signum=15)
+[INFO] [sync_slam_toolbox_node-1]: process has finished cleanly [pid 349532]

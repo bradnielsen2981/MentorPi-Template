@@ -6,9 +6,19 @@ from interfaces.hashing import *
 from robot import Robot
 import logging, time, sys, os, signal
 
+#---SETUP LOGGING------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+logging.basicConfig(
+    filename=os.path.join(LOG_DIR, "flask.log"),
+    filemode="w",  # Clear the log each time the app starts
+    level=logging.INFO
+)
+
 #---CONFIGURE APP---------------------------------------------------
 app = Flask(__name__)
-logging.basicConfig(filename='logs/flask.log', level=logging.INFO)
 sys.tracebacklimit = 10
 app.config['SECRET_KEY'] = "Type in a secret line of text"
 
