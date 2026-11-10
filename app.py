@@ -2,7 +2,7 @@
 
 from flask import *
 from interfaces.databaseinterface import Database
-from interfaces.hashing import *
+from template.interfaces.hashinginterface import *
 from robot import Robot
 import logging, time, sys, os, signal
 

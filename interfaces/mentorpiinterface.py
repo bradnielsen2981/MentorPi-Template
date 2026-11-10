@@ -147,7 +147,11 @@ class MentorPi:
             self.stop()
             time.sleep(0.1)
         finally:
-            self._executor.shutdown()
+            # Let the spin thread finish any in-flight callback before the
+            # node is destroyed, otherwise rclpy logs a "Destroyable" error.
+            self._executor.shutdown(timeout_sec=1.0)
+            self._spin_thread.join(timeout=1.0)
+            self._executor.remove_node(self.node)
             self.node.destroy_node()
             if self._owns_rclpy and rclpy.ok():
                 rclpy.shutdown()
@@ -536,5 +540,7 @@ if __name__ == '__main__':
         print('ahead    :', robot.get_distance_ahead(), 'm')
         robot.turn_on_led(0, 0, 255)
         robot.beep()
-        time.sleep(1)
+        #robot.move_forward(2)
+        robot.rotate_degrees(90)
         robot.turn_off_led()
+        time.sleep(1)
