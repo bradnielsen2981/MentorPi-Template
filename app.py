@@ -93,27 +93,24 @@ def stop():
 # CAMERA CODE-(do not touch this!!)-------------------------------------------------------
 
 # Continually gets the frame from the pi camera
-def videostream():
-    """Video streaming generator function."""
-    while True:
-        if ROBOT:
-            frame = ROBOT.CAMERA.get_jpeg_frame() #can change quality to test efficiency
-            if frame:
-                yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            else:
-                return '', 204
-        else:
-            return '', 204 
+def videostream(camera):
+    """Video streaming generator function. Ends the stream when the camera stops."""
+    # camera is kept locally so shutdown_robot() setting ROBOT = None can't crash the stream
+    while camera.status == "Running":
+        frame = camera.get_jpeg_frame() #can change quality to test efficiency
+        if not frame:
+            break
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
 # Embeds the videofeed by returning a continual stream as above
 @app.route('/videofeed')
 def videofeed():
-    if ROBOT:
-        """Video streaming route. Put this in the src attribute of an img tag."""
-        return Response(videostream(), mimetype='multipart/x-mixed-replace; boundary=frame')
-    else:
+    """Video streaming route. Put this in the src attribute of an img tag."""
+    robot = ROBOT
+    if not robot:
         return '', 204
+    return Response(videostream(robot.CAMERA), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 # Turn on detection mode
 @app.route('/turn_on_detection', methods=['GET','POST'])
