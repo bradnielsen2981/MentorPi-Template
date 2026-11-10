@@ -141,8 +141,7 @@ def shutdown_robot():
     app.logger.info("Shutting down robot")
     global ROBOT
     if ROBOT:
-        ROBOT.CAMERA.stop()
-        ROBOT.stop()
+        ROBOT.shutdown() # stops motors, mapping, lidar and camera, then releases the ROS connection
         time.sleep(0.5)
         ROBOT.SOUND.say("Goodbye")
         ROBOT = None

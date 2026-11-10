@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # container for more advanced functionality
 # use Ctrl + K, Ctrl + 0 to minimise all coding blocks in VSCODE
-import time, sys, os, math, logging
+import time, sys, os, math, logging, threading
 import numpy as np
 import cv2
 
@@ -10,6 +10,8 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 from mentorpiinterface import MentorPi
 from soundinterface import SoundInterface
 from camerainterface import CameraInterface
+from lidarinterface import LidarInterface
+from mappinginterface import MappingInterface
 from loggerinterface import setup_logger
 
 # RGB values used to show a detection colour on the robot's LEDs
@@ -40,8 +42,30 @@ class RobotInterface(MentorPi):
 
         self.CAMERA = CameraInterface(node=self.node) # shares the robot's ROS connection
         self.CAMERA.start()
+
+        # The lidar and mapping interfaces are only created the first time they are used (see LIDAR and MAPPING)
+        self._lidar = None
+        self._mapping = None
+        self._interface_lock = threading.Lock() # Flask threads could otherwise create two at once
         self.starttime = time.time() # when did robot get created
         return
+
+    @property
+    def LIDAR(self):
+        """The lidar interface (scans, distances, scan picture), sharing the robot's ROS connection."""
+        with self._interface_lock:
+            if self._lidar is None:
+                self._lidar = LidarInterface(node=self.node)
+            return self._lidar
+
+    @property
+    def MAPPING(self):
+        """The mapping interface (SLAM map, position, object tagging), using the robot's lidar and camera."""
+        lidar = self.LIDAR
+        with self._interface_lock:
+            if self._mapping is None:
+                self._mapping = MappingInterface(lidar=lidar, camera=self.CAMERA, node=self.node)
+            return self._mapping
 
     def stop_command(self):
         """
@@ -381,6 +405,11 @@ class RobotInterface(MentorPi):
         """
         self.command = "Shutdown"
         self.stop_command()
+        # Stop in reverse order of creation: mapping uses the lidar and camera, which all use the ROS connection
+        if self._mapping is not None:
+            self._mapping.stop()
+        if self._lidar is not None:
+            self._lidar.stop()
         self.CAMERA.stop()
         self.turn_off_led()
         super().shutdown() # releases the ROS connection
