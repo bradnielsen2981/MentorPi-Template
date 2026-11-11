@@ -4,8 +4,9 @@
 mentorpiinterface.py - simple Python API for the Hiwonder MentorPi (mecanum).
 
 Talks to the robot through the ROS 2 topics published by the stock bringup
-(ros_robot_controller, odom_publisher, imu filter, MS200 lidar), so the
-bringup must already be running. The camera is handled by camerainterface.py.
+(ros_robot_controller, odom_publisher, imu filter), so the bringup must
+already be running. The camera is handled by camerainterface.py and the
+lidar by lidarinterface.py.
 Run scripts inside the MentorPi container
 with the ROS environment sourced, e.g.
 
@@ -35,7 +36,7 @@ from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import Twist, Vector3Stamped
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu, LaserScan
+from sensor_msgs.msg import Imu
 from std_msgs.msg import UInt16
 from ros_robot_controller_msgs.msg import (
     BuzzerState, ButtonState, LedState, MotorState, MotorsState, OLEDState,
@@ -56,7 +57,6 @@ IMU_TOPIC = '/imu'                      # calibrated + complementary filtered
 IMU_RAW_TOPIC = '/ros_robot_controller/imu_raw'
 IMU_RPY_TOPIC = '/imu/rpy/filtered'
 ODOM_TOPIC = '/odom'                    # EKF fused odometry
-SCAN_TOPIC = '/scan_raw'
 
 # Camera gimbal PWM servos (pulse width in microseconds, 1500 = centre).
 CAMERA_TILT_SERVO_ID = 1
@@ -119,7 +119,6 @@ class MentorPi:
         self._subscribe('imu_raw', Imu, IMU_RAW_TOPIC)
         self._subscribe('imu_rpy', Vector3Stamped, IMU_RPY_TOPIC)
         self._subscribe('odom', Odometry, ODOM_TOPIC)
-        self._subscribe('scan', LaserScan, SCAN_TOPIC)
         self._subscribe('battery', UInt16, BATTERY_TOPIC, qos=10)
         self._subscribe('button', ButtonState, BUTTON_TOPIC, qos=10,
                         callback=self._on_button)
@@ -363,56 +362,6 @@ class MentorPi:
         return _quaternion_to_rpy(msg.pose.pose.orientation)[2]
 
     # ------------------------------------------------------------------ #
-    # Lidar
-    # ------------------------------------------------------------------ #
-    def get_lidar_scan(self, timeout=1.0):
-        """Return the latest LaserScan as a dict, or None.
-
-        {'angles': [rad...], 'ranges': [m...], 'range_min': m, 'range_max': m}
-        Angle 0 is straight ahead, increasing anticlockwise (to the left).
-        Invalid readings are reported as float('inf').
-        """
-        msg = self._get('scan', timeout)
-        if msg is None:
-            return None
-        ranges = [r if msg.range_min <= r <= msg.range_max else float('inf')
-                  for r in msg.ranges]
-        angles = [msg.angle_min + i * msg.angle_increment for i in range(len(ranges))]
-        return {'angles': angles, 'ranges': ranges,
-                'range_min': msg.range_min, 'range_max': msg.range_max}
-
-    def get_distance(self, angle=0.0, width=10.0, timeout=1.0):
-        """Return the closest lidar distance (m) in a cone.
-
-        angle: centre of the cone in degrees (0 = ahead, 90 = left,
-               -90 = right, 180 = behind)
-        width: cone width in degrees
-        Returns float('inf') if nothing is detected, None if no scan.
-        """
-        scan = self.get_lidar_scan(timeout)
-        if scan is None:
-            return None
-        centre, half = math.radians(angle), math.radians(width) / 2
-        best = float('inf')
-        for a, r in zip(scan['angles'], scan['ranges']):
-            diff = math.atan2(math.sin(a - centre), math.cos(a - centre))
-            if abs(diff) <= half and r < best:
-                best = r
-        return best
-
-    def get_distance_ahead(self, width=20.0):
-        return self.get_distance(0.0, width)
-
-    def get_distance_behind(self, width=20.0):
-        return self.get_distance(180.0, width)
-
-    def get_distance_left(self, width=20.0):
-        return self.get_distance(90.0, width)
-
-    def get_distance_right(self, width=20.0):
-        return self.get_distance(-90.0, width)
-
-    # ------------------------------------------------------------------ #
     # Servos / camera gimbal
     # ------------------------------------------------------------------ #
     def set_servo(self, servo_id, pulse, duration=0.5):
@@ -537,7 +486,6 @@ if __name__ == '__main__':
         print('imu      :', robot.get_imu_sensor())
         print('rpy      :', robot.get_orientation())
         print('odometry :', robot.get_odometry())
-        print('ahead    :', robot.get_distance_ahead(), 'm')
         robot.turn_on_led(0, 0, 255)
         robot.beep()
         #robot.move_forward(2)

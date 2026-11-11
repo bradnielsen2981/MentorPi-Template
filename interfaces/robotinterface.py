@@ -67,6 +67,27 @@ class RobotInterface(MentorPi):
                 self._mapping = MappingInterface(lidar=lidar, camera=self.CAMERA, node=self.node)
             return self._mapping
 
+    # Lidar shortcuts, so robot.get_distance_ahead() works without going through robot.LIDAR
+    def get_distance(self, angle=0, width=20):
+        """Nearest obstacle in metres inside a cone (see LidarInterface.get_distance)."""
+        return self.LIDAR.get_distance(angle, width)
+
+    def get_distance_ahead(self, width=20):
+        """Nearest obstacle straight ahead in metres."""
+        return self.LIDAR.get_distance_ahead(width)
+
+    def get_distance_behind(self, width=20):
+        """Nearest obstacle behind in metres."""
+        return self.LIDAR.get_distance_behind(width)
+
+    def get_distance_left(self, width=20):
+        """Nearest obstacle on the left in metres."""
+        return self.LIDAR.get_distance_left(width)
+
+    def get_distance_right(self, width=20):
+        """Nearest obstacle on the right in metres."""
+        return self.LIDAR.get_distance_right(width)
+
     def stop_command(self):
         """
         Safely stops the robot's current movement process and resets the command state.
